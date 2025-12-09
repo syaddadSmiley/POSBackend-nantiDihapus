@@ -1,6 +1,7 @@
 const dotenv = require('dotenv');
 const fs = require('fs');
 const path = require('path');
+const mysql2 = require('mysql2');
 
 // 1. Tentukan lingkungan (default ke 'development')
 const NODE_ENV = process.env.NODE_ENV || 'development';
