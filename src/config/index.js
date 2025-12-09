@@ -43,6 +43,7 @@ module.exports = {
         host: process.env.DB_HOST || '127.0.0.1',
         port: process.env.DB_PORT || 4000, // Default TiDB Port
         dialect: 'mysql',
+		dialectModule: mysql2,
         logging: NODE_ENV === 'development' ? console.log : false, // Matikan log SQL di production agar bersih
         
         // KONFIGURASI KRUSIAL UNTUK TIDB:
