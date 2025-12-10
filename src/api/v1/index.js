@@ -9,6 +9,7 @@ const shiftRouter = require('./shiftRouter')
 const dashboardRouter = require('./dashboardRouter')
 const taxes = require('./taxRouter');
 const reportRouter = require('./reportRouter');
+const userRouter = require('./userRouter');
 
 router.use('/fnb', fnbRouter);
 router.use('/carwash', carwashRouter);
@@ -19,6 +20,7 @@ router.use('/shift', shiftRouter);
 router.use('/dashboard', dashboardRouter);
 router.use('/taxes', taxes);
 router.use('/reports', reportRouter);
+router.use('/users', userRouter);
 
 module.exports = router;
     

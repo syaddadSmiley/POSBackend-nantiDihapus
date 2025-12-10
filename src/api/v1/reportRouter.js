@@ -1,8 +1,8 @@
-// file: src/api/v1/reportRouter.js
 const router = require('express').Router();
 const ReportController = require('../../controller/ReportController');
 const mw = require('../../utils/middleware');
 
-router.get('/sales', mw.verifyToken, ReportController.getSales);
+// Hanya User yang punya izin 'report.sales' yang bisa lihat ini
+router.get('/sales', mw.verifyToken, mw.can('report.sales'), ReportController.getSales);
 
 module.exports = router;

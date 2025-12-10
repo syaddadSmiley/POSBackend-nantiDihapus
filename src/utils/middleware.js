@@ -56,48 +56,54 @@ module.exports = {
     can(requiredPermission) {
         return async (req, res, next) => {
             try {
-                // Pastikan user sudah login (verifyToken harus jalan duluan)
                 if (!req.decoded || !req.decoded.payloadToken) {
                     return res.status(401).json({ message: 'Unauthorized: No user session' });
                 }
 
                 const db = req.app.get('db');
-                const userId = req.decoded.payloadToken.id; // Pastikan key ini sesuai payload login
+                const userId = req.decoded.payloadToken.id; 
 
-                // Query User + Role + Permissions
-                // Kita ambil permissions yang dimiliki Role user ini
+                // --- LOGGING DEBUGGING (TAMBAHKAN INI) ---
+                console.log(`🛡️ [RBAC Check] User: ${userId}, Permission Needed: ${requiredPermission}`);
+                // -----------------------------------------
+
                 const user = await db.users.findByPk(userId, {
                     include: [{
                         model: db.roles,
-                        as: 'role', // Sesuai alias di model Users
+                        as: 'role',
                         include: [{
                             model: db.permissions,
-                            as: 'permissions' // Sesuai alias di model Roles
+                            as: 'permissions'
                         }]
                     }]
                 });
 
-                // Cek Validitas User & Role
-                if (!user) {
-                    return res.status(401).json({ message: 'User not found' });
+                // --- LOGGING HASIL QUERY (TAMBAHKAN INI) ---
+                if (!user) console.log('❌ User not found in DB');
+                else if (!user.role) console.log('❌ User has NO ROLE assigned');
+                else {
+                    console.log(`✅ Role Found: ${user.role.name}`);
+                    const perms = user.role.permissions.map(p => p.name);
+                    console.log(`📜 Permissions: ${perms.join(', ')}`);
                 }
-                if (!user.role) {
+                // -------------------------------------------
+
+                if (!user || !user.role) {
                     return res.status(403).json({ message: 'Forbidden: User has no role assigned' });
                 }
 
-                // Cek Kepemilikan Permission
-                // .some() akan return true jika salah satu permission namanya cocok
                 const hasPermission = user.role.permissions.some(p => p.name === requiredPermission);
-
-                // KHUSUS: Jika Role namanya 'Owner', kita beri akses "Dewa" (Bypass)
-                // Ini opsional, tapi berguna agar Owner tidak perlu assign permission manual ke diri sendiri
-                const isOwner = user.role.name.toLowerCase() === 'owner';
+                
+                // Pastikan pengecekan Owner aman (pakai optional chaining)
+                const isOwner = user.role.name?.toLowerCase() === 'owner';
 
                 if (hasPermission || isOwner) {
-                    next(); // Lolos!
+                    console.log('🔓 Access GRANTED'); // Log Sukses
+                    next(); 
                 } else {
+                    console.log('🔒 Access DENIED'); // Log Gagal
                     return res.status(403).json({ 
-                        message: `Forbidden: You need permission '${requiredPermission}' to access this resource.` 
+                        message: `Forbidden: You need permission '${requiredPermission}'` 
                     });
                 }
 

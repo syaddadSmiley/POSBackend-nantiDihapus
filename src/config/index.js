@@ -38,10 +38,10 @@ module.exports = {
     db: {
         // Support penamaan variabel TiDB (DB_USER) dan kode lama (DB_USERNAME)
         username: process.env.DB_USER || process.env.DB_USERNAME || 'root', 
-        password: process.env.DB_PASSWORD || process.env.DB_PASS || null,
+        password: process.env.DB_PASSWORD || process.env.DB_PASS || '123123',
         database: process.env.DB_NAME || 'sakila',
         host: process.env.DB_HOST || '127.0.0.1',
-        port: process.env.DB_PORT || 4000, // Default TiDB Port
+        port: process.env.DB_PORT || 3306, // Default TiDB Port
         dialect: 'mysql',
 		dialectModule: mysql2,
         logging: NODE_ENV === 'development' ? console.log : false, // Matikan log SQL di production agar bersih
