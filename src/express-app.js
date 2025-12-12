@@ -9,7 +9,7 @@ module.exports = async (app) => {
     app.set('config', config);
     app.use(express.json());
     const corsOptions = {
-        origin: ["http://203.175.11.217", "http://localhost:3000", "http://pos-aspace.xyz", "http://localhost:5173", "*"], // Allow requests from the same IP
+        origin: ["http://203.175.11.217", "http://localhost:3000", "http://pos-aspace.xyz", "http://localhost:5173", "*", "https://1632ghkl-5173.asse.devtunnels.ms/"], // Allow requests from the same IP
         credentials: true, // Necessary for cookies
         methods: ["GET", "POST", "PUT", "DELETE"],
         allowedHeaders: ["Content-Type", "Authorization", "Access-Control-Allow-Credentials"],
