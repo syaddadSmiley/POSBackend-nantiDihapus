@@ -130,6 +130,7 @@ class MenuService {
                         include: [
                             {
                                 model: db.item_variations,
+                                as: 'item_variations',
                                 include: [ db.taxes ]
                             },
                             db.item_tags,
