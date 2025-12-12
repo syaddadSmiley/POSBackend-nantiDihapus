@@ -131,7 +131,10 @@ class MenuService {
                             {
                                 model: db.item_variations,
                                 as: 'item_variations',
-                                include: [ db.taxes ]
+                                include: [ {
+                                    model: db.taxes,
+                                    as: 'taxes' // <--- WAJIB DITAMBAHKAN (FIX ERROR)
+                                }]
                             },
                             db.item_tags,
                             { // Include 'modifier_lists' (grup)
