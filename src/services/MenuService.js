@@ -173,49 +173,51 @@ class MenuService {
     static async getAllItems(req) {
         try {
             const db = req.app.get('db');
-            
-            // 1. Ambil Parameter Query (Default: page 1, limit 10)
-            const { page = 1, limit = 10, search = '' } = req.query;
+            const { page = 1, limit = 10, search = '', sort = 'name' } = req.query; // Tambah default 'sort'
+
             const offset = (page - 1) * limit;
+            
+            // --- LOGIKA SORTING BARU ---
+            let orderQuery = [['name', 'ASC'], ['id', 'ASC']]; // Default A-Z
 
-            // 2. Buat Filter Pencarian (Nama Item)
-            const whereClause = {};
-            if (search) {
-                whereClause.name = { [Op.like]: `%${search}%` };
+            if (sort === 'latest') {
+                // Urutkan berdasarkan waktu update terakhir (Stok Berubah / Edit Produk)
+                orderQuery = [['updatedAt', 'DESC'], ['id', 'DESC']];
             }
+            // ---------------------------
 
-            // 3. Query Database (findAndCountAll untuk pagination)
-            const { count, rows } = await db.items.findAndCountAll({
-                where: whereClause,
+            // Bangun Query Options
+            const options = {
+                where: {}, // Tambahkan logika search di sini jika ada
                 include: [
                     { 
                         model: db.categories, 
-                        attributes: ['id', 'name'] // Kita butuh nama kategorinya
+                        as: 'category',
+                        attributes: ['id', 'name']
                     },
                     {
                         model: db.item_variations,
-                        attributes: ['id', 'name', 'price', 'stock_level'],
-                        as: 'item_variations',
-                        include: [
-                        {
-                            model: db.taxes,
-                            as: 'taxes' // <--- Tambahkan juga disini biar aman
-                        }
-                    ]
+                        as: 'item_variations', // Sesuaikan alias
+                        // include taxes jika perlu
                     }
                 ],
+                order: orderQuery, // <--- GUNAKAN VARIABEL ORDER INI
                 limit: parseInt(limit),
                 offset: parseInt(offset),
-                order: [['name', 'ASC']], // Urutkan A-Z
-                distinct: true // Penting agar hitungan count akurat saat ada include
-            });
+                distinct: true // Penting agar count pagination akurat dengan include
+            };
 
-            // 4. Kembalikan format yang rapi untuk Frontend
+            if (search) {
+                options.where.name = { [db.Sequelize.Op.like]: `%${search}%` };
+            }
+
+            const data = await db.items.findAndCountAll(options);
+
             return {
-                data: rows,
+                data: data.rows,
                 meta: {
-                    totalItems: count,
-                    totalPages: Math.ceil(count / limit),
+                    totalItems: data.count,
+                    totalPages: Math.ceil(data.count / limit),
                     currentPage: parseInt(page),
                     itemsPerPage: parseInt(limit)
                 }
@@ -556,49 +558,67 @@ class MenuService {
                 await item.setModifierLists(modifier_list_ids, { transaction });
             }
 
-            // 3. Handle Variasi (Complex: Create vs Update vs Delete)
+            // 3. Handle Variasi (Metode: SAFE SYNC) 🧠
             if (variations && variations.length > 0) {
-                // A. Ambil semua ID variasi yang dikirim dari Frontend
-                const incomingIds = variations.filter(v => v.id).map(v => v.id);
-
-                // B. Hapus variasi di Database yang TIDAK ada di incomingIds (artinya dihapus user)
-                await db.item_variations.destroy({
-                    where: {
-                        item_id: id,
-                        id: { [db.Sequelize.Op.notIn]: incomingIds }
-                    },
-                    transaction
+                
+                // A. Ambil SEMUA variasi lama di database
+                const existingVariations = await db.item_variations.findAll({ 
+                    where: { item_id: id },
+                    transaction 
                 });
 
-                // C. Loop untuk Create atau Update
+                // B. Loop payload dari Frontend
                 for (const v of variations) {
+                    // Cari kecocokan: Cek ID dulu, kalau tidak ada cek Nama
+                    const match = existingVariations.find(ev => 
+                        (v.id && ev.id === v.id) || (ev.name === v.name)
+                    );
+
                     let variationInstance;
 
-                    if (v.id) {
-                        // UPDATE Existing Variation
-                        await db.item_variations.update({
+                    if (match) {
+                        // KASUS UPDATE: Ditemukan variasi lama yang cocok
+                        match._processed = true; // Tandai agar tidak dihapus nanti
+                        
+                        await match.update({
                             name: v.name,
                             price: v.price,
                             stock_level: v.stock_level,
-                            sku: v.sku
-                        }, { where: { id: v.id }, transaction });
+                            sku: v.sku,
+                            // Pastikan track_inventory diupdate (default true jika undefined)
+                            track_inventory: (v.track_inventory !== undefined) ? v.track_inventory : true
+                        }, { transaction });
                         
-                        // Ambil instance untuk set pajak
-                        variationInstance = await db.item_variations.findByPk(v.id, { transaction });
+                        variationInstance = match;
                     } else {
-                        // CREATE New Variation (User klik "Tambah Variasi" saat edit)
+                        // KASUS CREATE: Tidak ada yang cocok, buat baru
                         variationInstance = await db.item_variations.create({
                             item_id: id,
                             name: v.name,
                             price: v.price,
                             stock_level: v.stock_level,
-                            sku: v.sku
+                            sku: v.sku,
+                            track_inventory: (v.track_inventory !== undefined) ? v.track_inventory : true
                         }, { transaction });
                     }
 
-                    // D. Update Pajak per Variasi
+                    // C. Update Pajak per Variasi (Jika ada tax_ids)
                     if (tax_ids && variationInstance) {
-                         await variationInstance.setTaxes(tax_ids, { transaction });
+                        await variationInstance.setTaxes(tax_ids, { transaction });
+                    }
+                }
+
+                // D. Hapus Variasi Lama yang TIDAK ada di payload (Safe Delete)
+                for (const oldVar of existingVariations) {
+                    if (!oldVar._processed) {
+                        try {
+                            // Coba hapus satu per satu
+                            await oldVar.destroy({ transaction });
+                        } catch (err) {
+                            // Jika gagal hapus (karena pernah laku), BIARKAN SAJA.
+                            // Jangan throw error, cukup log warning di console server.
+                            console.log(`⚠️ Safe Delete: Tidak bisa menghapus variasi "${oldVar.name}" (ID: ${oldVar.id}) karena ada riwayat transaksi.`);
+                        }
                     }
                 }
             }
@@ -608,7 +628,7 @@ class MenuService {
 
         } catch (error) {
             await transaction.rollback();
-            LogError(__dirname, 'MenuService.updateItem', error);
+            LogError(__dirname, 'MenuService.updateItem', error.message);
             throw error;
         }
     }

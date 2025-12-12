@@ -1,9 +1,12 @@
+const { all } = require("../..");
 
 module.exports = (sequelize, DataTypes) => {
     const Categories = sequelize.define('categories', {
         id: {
             type: DataTypes.INTEGER,
             primaryKey: true,
+            autoIncrement: true,
+            allowNull: false
         },
         menu_type_id: {
             type: DataTypes.INTEGER,

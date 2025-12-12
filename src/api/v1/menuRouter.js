@@ -1,5 +1,5 @@
 const router = require('express').Router();
-const MenuController = require('../../controller/MenuController');
+const MenuController = require('../../controllers/MenuController');
 const mw = require('../../utils/middleware');
 
 // --- Kategori ---
@@ -22,5 +22,9 @@ router.delete('/item/:id', mw.verifyToken, mw.can('product.delete'), MenuControl
 
 // --- Modifiers ---
 router.get('/modifier-lists', mw.verifyToken, mw.can('product.view'), MenuController.modifierListsGet);
+// TAMBAHKAN INI:
+router.post('/modifier-lists', mw.verifyToken, mw.can('product.create'), MenuController.modifierListCreate);
+router.put('/modifier-lists/:id', mw.verifyToken, mw.can('product.edit'), MenuController.modifierListUpdate);
+router.delete('/modifier-lists/:id', mw.verifyToken, mw.can('product.delete'), MenuController.modifierListDelete);
 
 module.exports = router;

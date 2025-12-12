@@ -1,5 +1,5 @@
 const router = require('express').Router();
-const FnbController = require('../../controller/FnbController');
+const FnbController = require('../../controllers/FnbController');
 const mw = require('../../utils/middleware');
 
 // --- Transaksi (Butuh izin pos.order) ---
@@ -11,7 +11,7 @@ router.patch('/order/:order_id/pay', mw.verifyToken, mw.can('pos.order'), FnbCon
 
 // --- Void / Delete (Butuh izin KHUSUS: pos.refund) ---
 // Kasir biasa mungkin bisa order, tapi tidak boleh delete sembarangan
-router.delete('/order', mw.verifyToken, mw.can('pos.refund'), FnbController.orderDelete);
+router.delete('/order/:order_id', mw.verifyToken, mw.can('pos.refund'), FnbController.orderDelete);
 
 // --- Laporan via Email (Butuh izin report.sales) ---
 router.post('/order/report', mw.verifyToken, mw.can('report.sales'), FnbController.orderReport);

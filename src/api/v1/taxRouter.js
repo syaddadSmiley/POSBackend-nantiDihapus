@@ -1,6 +1,6 @@
 
 const router = require('express').Router();
-const TaxController = require('../../controller/TaxController');
+const TaxController = require('../../controllers/TaxController');
 const mw = require('../../utils/middleware');
 
 // Endpoint: GET /api/v1/taxes

@@ -6,6 +6,7 @@ const { LogError, LogAny } = require('../utils');
 const { Op } = require('sequelize');
 const { sequelize } = require('../db/models');
 const moment = require('moment');
+const InventoryService = require('./InventoryService');
 
 class OrderService {
     
@@ -56,32 +57,76 @@ class OrderService {
         const transaction = await sequelize.transaction();
         try {
             const db = req.app.get('db');
-            
             if (_.isEmpty(data)) throw new Error('Data is empty');
 
-            let userId = null;
-            if (req.decoded && req.decoded.payloadToken) {
-                userId = req.decoded.payloadToken.id;
-            } else if (req.user) {
-                userId = req.user.id;
-            }
-
+            let userId = req.decoded?.payloadToken?.id || req.user?.id || null;
             const clientDate = new Date(data.date); 
             
-            // 2. Format untuk 'order_id' (DDMMYYYY) - berdasarkan tanggal klien
             let mm_id = (clientDate.getMonth() + 1).toString().padStart(2, '0');
             let dd_id = clientDate.getDate().toString().padStart(2, '0');
-            const dateFormat_id = `${dd_id}${mm_id}${clientDate.getFullYear()}`; // "15112025"
+            const dateFormat_id = `${dd_id}${mm_id}${clientDate.getFullYear()}`;
             
-            // 3. Panggil 'generateUniqueOrderNum' DI DALAM transaksi
-            //    Kirim string 'data.date' (misal: "2025-11-15T01:47:40")
             let orderNum = await this.generateUniqueOrderNum(req, data.date, data.order_type, transaction);
             data.order_num = orderNum;
             data.order_id = `${data.order_type}-${dateFormat_id}-${data.order_num}`;
-            
-            // 4. Gunakan 'data.date' dari klien. Sequelize akan mengonversinya ke UTC.
             data.date = clientDate;
 
+            let calculatedSubtotal = 0;
+            let calculatedTotalTax = 0;
+
+            for (const item of data.order_items) {
+                // 1. Ambil Data Variasi & Pajak dari DB (Secure)
+                const variation = await db.item_variations.findByPk(item.variation_id, {
+                    include: [{
+                        model: db.taxes,
+                        as: 'taxes', // Pastikan alias sesuai model Anda
+                        through: { attributes: [] } 
+                    }],
+                    transaction
+                });
+
+                if (!variation) throw new Error(`Variation ID ${item.variation_id} not found`);
+
+                // 2. Hitung Subtotal Item
+                // (Harga x Quantity)
+                const itemSubtotal = variation.price * item.quantity;
+                calculatedSubtotal += itemSubtotal;
+
+                // 3. Hitung Pajak Item
+                // Jika item punya pajak (misal: PPN 11% atau PB1 10%)
+                if (variation.taxes && variation.taxes.length > 0) {
+                    for (const tax of variation.taxes) {
+                        if (tax.type === 'PERCENTAGE') {
+                            // Rumus: (Harga x Qty) * (Rate / 100)
+                            const taxAmount = Math.round(itemSubtotal * (parseFloat(tax.rate) / 100));
+                            calculatedTotalTax += taxAmount;
+                        } 
+                        // Jika ada tipe FIXED, tambahkan logika di sini
+                    }
+                }
+            }
+
+            // 4. Hitung Diskon (Logic Diskon yg sudah kita bahas)
+            const { discount_type, discount_value } = data;
+            let discountAmount = 0;
+
+            if (discount_type && discount_value > 0) {
+                if (discount_type === 'percentage') {
+                    discountAmount = Math.round(calculatedSubtotal * (discount_value / 100));
+                } else if (discount_type === 'fixed') {
+                    discountAmount = discount_value;
+                }
+            }
+            // Validasi agar diskon tidak minus
+            if (discountAmount > calculatedSubtotal) discountAmount = calculatedSubtotal;
+
+            // 5. Final Total
+            // Rumus: (Subtotal - Diskon) + Pajak
+            const finalTotal = (calculatedSubtotal - discountAmount) + calculatedTotalTax;
+
+            // ---------------------------------------------------------
+            // 💾 SIMPAN KE DATABASE
+            // ---------------------------------------------------------
             const orderData = {
                 order_id: data.order_id,
                 order_num: data.order_num,
@@ -89,35 +134,46 @@ class OrderService {
                 date: data.date,
                 notes: data.notes,
                 status: data.status,
-                total: data.total,
+                
+                // --- VALUE TERPISAH ---
+                subtotal: calculatedSubtotal,       // Murni harga barang
+                discount_type: discount_type || null,
+                discount_value: discount_value || 0,
+                discount_amount: discountAmount,    // Nilai potongan
+                total_tax: calculatedTotalTax,      // Nilai pajak terpisah
+                total: finalTotal,                  // Yang harus dibayar
+                // ----------------------
+
                 metode_pembayaran: data.metode_pembayaran,
                 member_id: data.member_id,
                 voucher_id: data.voucher_id,
                 user_id: userId
             };
 
-            // 5. Buat pesanan induk
             const createdOrder = await BaseRepository.create(req, orderData, 'orders', { transaction });
             
-            // 3. Loop melalui item pesanan
+            // LOOP ITEMS
             for (const item of data.order_items) {
                 const variationId = item.variation_id;
                 const quantity = item.quantity;
                 const modifierIds = item.modifier_ids || [];
 
-                // 4. LOGIKA MANAJEMEN STOK (VARIASI)
-                const variation = await db.item_variations.findByPk(variationId, { transaction, lock: true });
-                if (!variation) throw new Error(`Variation ${variationId} not found`);
+                // ---------------------------------------------------------
+                // 1. LOGIKA STOK VARIASI (Gunakan InventoryService) 
+                // ---------------------------------------------------------
+                // Fungsi ini otomatis cek track_inventory, cek stok cukup/tidak,
+                // kurangi stok, DAN buat log history.
+                await InventoryService.updateStock(req, {
+                    variation_id: variationId,
+                    type: 'OUT',
+                    amount: quantity,
+                    notes: `Order #${data.order_num}`
+                }, transaction);
 
-                if (variation.track_inventory) {
-                    if (variation.stock_level < quantity) {
-                        throw new Error(`Stok ${variation.name} tidak mencukupi.`);
-                    }
-                    variation.stock_level -= quantity;
-                    await variation.save({ transaction });
-                }
-
-                // 5. LOGIKA MANAJEMEN STOK (MODIFIER)
+                // ---------------------------------------------------------
+                // 2. LOGIKA STOK MODIFIER (Masih Manual)
+                // ---------------------------------------------------------
+                // Karena InventoryLog belum support modifier_id, kita pakai cara lama
                 for (const modId of modifierIds) {
                     const modifier = await db.modifiers.findByPk(modId, { transaction, lock: true });
                     if (!modifier) throw new Error(`Modifier ${modId} not found`);
@@ -126,12 +182,11 @@ class OrderService {
                         if (modifier.stock_level < quantity) {
                             throw new Error(`Stok modifier ${modifier.name} tidak mencukupi.`);
                         }
-                        modifier.stock_level -= (quantity); // Kurangi stok
+                        modifier.stock_level -= (quantity);
                         await modifier.save({ transaction });
                     }
                 }
 
-                // 6. Buat 'order_items'
                 const createdOrderItem = await BaseRepository.create(req, {
                     order_id: createdOrder.dataValues.order_id,
                     item_variation_id: variationId,
@@ -141,11 +196,10 @@ class OrderService {
                     quantity: quantity,
                 }, 'order_items', { transaction });
 
-                // 7. Buat 'order_item_modifiers'
                 for (const modId of modifierIds) {
                     const modifier = await db.modifiers.findByPk(modId, { transaction });
                     await BaseRepository.create(req, {
-                        order_item_id: createdOrderItem.dataValues.id, // Tautkan ke PK 'order_items'
+                        order_item_id: createdOrderItem.dataValues.id,
                         modifier_id: modId,
                         component_name: modifier.name,
                         component_price: modifier.add_price
@@ -159,73 +213,43 @@ class OrderService {
         } catch (err) {
             if (!transaction.finished) await transaction.rollback();
             LogError(__dirname, 'OrderService.createOrder', err.message);
-            return Promise.reject(err);
+            throw err; // Lempar error agar ditangkap Controller
         }
     }
 
-    /**
-     * FUNGSI GENERIK BARU: Update Order
-     * Menerapkan transaksi DAN manajemen stok (mengembalikan stok lama, mengurangi stok baru).
-     */
     static async updateOrder(req, data) {
         const transaction = await sequelize.transaction();
         try {
             const db = req.app.get('db');
-            
             if (_.isEmpty(data)) throw new Error('Data is empty');
 
             const orderId = data.order_id;
-
-            // 1. Cari Order di Database
-            const findOptions = {
-                where: { order_id: orderId }, 
-                transaction
-            };
+            const findOptions = { where: { order_id: orderId }, transaction };
             const getOrderDataArray = await BaseRepository.getDataByOptions(req, 'orders', findOptions);
             
-            if (_.isEmpty(getOrderDataArray)) {
-                throw new Error(`Order with order_id ${orderId} not found`);
-            }
-
+            if (_.isEmpty(getOrderDataArray)) throw new Error(`Order ${orderId} not found`);
             const existingOrder = getOrderDataArray[0];
 
-            // ============================================================
-            // [BARU] VALIDASI STATUS & PEMBAYARAN (SISIPKAN DI SINI)
-            // ============================================================
-            
-            // 1. Cek Status Lunas
-            if (existingOrder.status === 'paid') {
-                throw new Error('Pesanan yang sudah LUNAS tidak dapat diedit.');
-            }
-            
-            // 2. Cek Total Baru vs Uang Masuk (Khusus status Partial)
+            if (existingOrder.status === 'paid') throw new Error('Pesanan LUNAS tidak dapat diedit.');
             if (existingOrder.status === 'partial') {
-                // Hitung total uang yang sudah masuk di tabel payments
-                const totalPaid = await db.order_payments.sum('amount', {
-                    where: { order_id: orderId },
-                    transaction
-                }) || 0;
-
-                // Tolak jika Total Baru < Uang Masuk (karena bakal jadi minus)
-                // data.total adalah total baru yang dikirim dari Frontend
-                if (data.total < totalPaid) {
-                    throw new Error(`Total baru (Rp ${data.total}) tidak boleh lebih kecil dari jumlah yang sudah dibayar (Rp ${totalPaid}).`);
-                }
+                const totalPaid = await db.order_payments.sum('amount', { where: { order_id: orderId }, transaction }) || 0;
+                if (data.total < totalPaid) throw new Error(`Total baru tidak boleh lebih kecil dari pembayaran masuk.`);
             }
-            // ============================================================
 
-
-            // --- PENTING: Kembalikan Stok Lama ---
+            // =========================================================
+            // A. KEMBALIKAN STOK LAMA (RESTORE)
+            // =========================================================
             const oldItems = await db.order_items.findAll({ where: { order_id: orderId }, transaction });
             for (const item of oldItems) {
-                // 1a. Kembalikan stok variasi
-                const variation = await db.item_variations.findByPk(item.item_variation_id, { transaction, lock: true });
-                if (variation && variation.track_inventory) {
-                    variation.stock_level += item.quantity;
-                    await variation.save({ transaction });
-                }
+                // 1. Restore Variasi via Service (Log IN)
+                await InventoryService.updateStock(req, {
+                    variation_id: item.item_variation_id,
+                    type: 'IN', // Masuk kembali
+                    amount: item.quantity,
+                    notes: `Revisi Order #${existingOrder.order_num} (Restore)`
+                }, transaction);
                 
-                // 1b. Kembalikan stok modifier
+                // 2. Restore Modifier (Manual)
                 const oldModifiers = await db.order_item_modifiers.findAll({ where: { order_item_id: item.id }, transaction });
                 for (const subItem of oldModifiers) {
                     const modifier = await db.modifiers.findByPk(subItem.modifier_id, { transaction, lock: true });
@@ -236,25 +260,25 @@ class OrderService {
                 }
             }
             
-            // Hapus item/sub-item lama
             await BaseRepository.deleteOrderByOptions(req, 'order_items', { where: { order_id: orderId }, transaction });
             
-            // --- Logika Penambahan Item Baru ---
+            // =========================================================
+            // B. POTONG STOK BARU (DEDUCT)
+            // =========================================================
             for (const item of data.order_items) {
                 const variationId = item.variation_id;
                 const quantity = item.quantity;
                 const modifierIds = item.modifier_ids || [];
 
-                // Cek & Kurangi Stok Variasi
-                const variation = await db.item_variations.findByPk(variationId, { transaction, lock: true });
-                if (!variation) throw new Error(`Variation ${variationId} not found`);
-                if (variation.track_inventory) {
-                    if (variation.stock_level < quantity) throw new Error(`Stok ${variation.name} tidak mencukupi.`);
-                    variation.stock_level -= quantity;
-                    await variation.save({ transaction });
-                }
+                // 1. Deduct Variasi via Service (Log OUT)
+                await InventoryService.updateStock(req, {
+                    variation_id: variationId,
+                    type: 'OUT',
+                    amount: quantity,
+                    notes: `Revisi Order #${existingOrder.order_num} (Update)`
+                }, transaction);
 
-                // Cek & Kurangi Stok Modifier
+                // 2. Deduct Modifier (Manual)
                 for (const modId of modifierIds) {
                     const modifier = await db.modifiers.findByPk(modId, { transaction, lock: true });
                     if (!modifier) throw new Error(`Modifier ${modId} not found`);
@@ -265,7 +289,7 @@ class OrderService {
                     }
                 }
 
-                // Buat 'order_items'
+                // ... (Create order_items & modifiers logic sama seperti createOrder) ...
                 const createdOrderItem = await BaseRepository.create(req, {
                     order_id: orderId,
                     item_variation_id: variationId,
@@ -275,7 +299,6 @@ class OrderService {
                     quantity: quantity,
                 }, 'order_items', { transaction });
                 
-                // Buat 'order_item_modifiers'
                 for (const modId of modifierIds) {
                     const modifier = await db.modifiers.findByPk(modId, { transaction });
                     await BaseRepository.create(req, {
@@ -287,7 +310,6 @@ class OrderService {
                 }
             }
             
-            // Terakhir, update pesanan induk
             const { order_items, ...orderData } = data; 
             const options = { where: { order_id: orderId }, transaction: transaction };
             const updatedOrder = await BaseRepository.updateOrderByOptions(req, orderData, 'orders', options);
@@ -298,7 +320,7 @@ class OrderService {
         } catch (error) {
             if (!transaction.finished) await transaction.rollback();
             LogError(__dirname, 'OrderService.updateOrder', error.message);
-            return Promise.reject(error);
+            throw error;
         }
     }
     
@@ -349,6 +371,11 @@ class OrderService {
             
             // Tambahkan 'include' bertingkat DENGAN ALIAS YANG BENAR
             options.include = [
+                {
+                    model: db.users,
+                    as: 'cashier', // Pastikan alias ini sesuai dengan models/Orders.js (biasanya 'user' atau 'cashier')
+                    attributes: ['id', 'name'] // Ambil nama saja agar ringan
+                },
                 {
                     model: db.order_items,
                     as: 'order_items', // (Asosiasi 'Orders.hasMany(models.order_items, { as: "order_items" })')
@@ -503,8 +530,45 @@ class OrderService {
      * FUNGSI GENERIK BARU: Hapus pesanan
      */
     static async deleteOrderByOptions(req, options){
-        const deleted = await BaseRepository.deleteOrderByOptions(req, 'orders', options);
-        return deleted;
+        const db = req.app.get('db');
+        const transaction = await db.sequelize.transaction();
+        
+        try {
+            // 1. Cari Order dulu untuk ambil item-nya
+            const ordersToDelete = await db.orders.findAll({ 
+                where: options.where,
+                include: [{ model: db.order_items, as: 'order_items' }],
+                transaction 
+            });
+
+            // 2. Kembalikan Stok (Looping Orders -> Looping Items)
+            for (const order of ordersToDelete) {
+                
+                // ❌ HAPUS BARIS INI: 
+                // if (order.status === 'paid') continue; 
+                // Kita ingin stok KEMBALI meskipun order sudah LUNAS (Refund/Void)
+
+                for (const item of order.order_items) {
+                    await InventoryService.updateStock(req, {
+                        variation_id: item.item_variation_id,
+                        type: 'IN', // Type IN = Stok Kembali
+                        amount: item.quantity,
+                        notes: `Void Order #${order.order_num} (${order.status})` // Catat status order di notes log
+                    }, transaction);
+                }
+            }
+
+            // 3. Hapus Order
+            const deleted = await BaseRepository.deleteOrderByOptions(req, 'orders', { ...options, transaction });
+            
+            await transaction.commit();
+            return deleted;
+
+        } catch (err) {
+            await transaction.rollback();
+            LogError(__dirname, 'OrderService.deleteOrderByOptions', err.message);
+            throw err;
+        }
     }
 
     /**

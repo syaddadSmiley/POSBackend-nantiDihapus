@@ -179,6 +179,102 @@ class MenuController {
             res.status(error.status || 500).json({ error : error.message });
         }
     }
+
+    // --- MODIFIER LIST CRUD ---
+
+    // 1. GET (Sudah ada, tapi pastikan include modifiers)
+    static async modifierListsGet(req, res) {
+        try {
+            const db = req.app.get('db');
+            const data = await db.modifier_lists.findAll({
+                include: [{ model: db.modifiers, as: 'modifiers' }]
+            });
+            res.json(data);
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    }
+
+    // 2. CREATE (Buat Grup + Opsinya)
+    static async modifierListCreate(req, res) {
+        const db = req.app.get('db');
+        const transaction = await db.sequelize.transaction();
+        try {
+            const { name, selection_type, min_selection, max_selection, modifiers } = req.body;
+
+            // Buat Header (Grup)
+            const newList = await db.modifier_lists.create({
+                name, selection_type, min_selection, max_selection
+            }, { transaction });
+
+            // Buat Detail (Opsi)
+            if (modifiers && modifiers.length > 0) {
+                const modifierData = modifiers.map(m => ({
+                    modifier_list_id: newList.id,
+                    name: m.name,
+                    add_price: m.add_price || 0,
+                    track_inventory: m.track_inventory || true,
+                    stock_level: m.stock_level || 0
+                }));
+                await db.modifiers.bulkCreate(modifierData, { transaction });
+            }
+
+            await transaction.commit();
+            res.status(201).json(newList);
+        } catch (err) {
+            await transaction.rollback();
+            res.status(400).json({ error: err.message });
+        }
+    }
+
+    // 3. UPDATE (Edit Grup / Tambah Opsi / Edit Stok Opsi)
+    static async modifierListUpdate(req, res) {
+        const db = req.app.get('db');
+        const transaction = await db.sequelize.transaction();
+        try {
+            const { id } = req.params;
+            const { name, modifiers } = req.body; // modifiers array
+
+            // Update Header
+            await db.modifier_lists.update({ name }, { where: { id }, transaction });
+
+            // Update/Create Modifiers
+            if (modifiers) {
+                for (const m of modifiers) {
+                    if (m.id) {
+                        // Update existing
+                        await db.modifiers.update({
+                            name: m.name,
+                            add_price: m.add_price,
+                            stock_level: m.stock_level // <-- DI SINI KITA ISI STOK
+                        }, { where: { id: m.id }, transaction });
+                    } else {
+                        // Create new option
+                        await db.modifiers.create({
+                            modifier_list_id: id,
+                            name: m.name,
+                            add_price: m.add_price || 0,
+                            stock_level: m.stock_level || 0,
+                            track_inventory: true
+                        }, { transaction });
+                    }
+                }
+            }
+            
+            await transaction.commit();
+            res.json({ message: 'Success' });
+        } catch (err) {
+            await transaction.rollback();
+            res.status(400).json({ error: err.message });
+        }
+    }
+
+    // 4. DELETE
+    static async modifierListDelete(req, res) {
+        try {
+            const db = req.app.get('db');
+            await db.modifier_lists.destroy({ where: { id: req.params.id } });
+            res.json({ message: 'Deleted' });
+        } catch (err) { res.status(500).json({ error: err.message }); }
+    }
 }
 
 module.exports = MenuController;

@@ -32,6 +32,14 @@ module.exports = (sequelize, DataTypes) => {
         dateclosebill: DataTypes.DATE,
         notes: DataTypes.STRING,
         status: DataTypes.STRING,
+        subtotal: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+        },
+        total_tax: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+        },
         total: {
             type: DataTypes.INTEGER,
             allowNull: false,
@@ -68,6 +76,12 @@ module.exports = (sequelize, DataTypes) => {
         Orders.belongsTo(models.users, {
             foreignKey: 'user_id',
             as: 'cashier' // Alias ini dipanggil di ReportService
+        });
+
+        Orders.hasMany(models.order_discounts, {
+            foreignKey: 'order_id',
+            sourceKey: 'order_id',
+            as: 'applied_discounts' // Nama alias untuk include
         });
     };
 

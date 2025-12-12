@@ -1,5 +1,5 @@
 const router = require('express').Router();
-const ShiftController = require('../../controller/ShiftController');
+const ShiftController = require('../../controllers/ShiftController');
 const mw = require('../../utils/middleware');
 
 // Siapapun yang boleh Transaksi (pos.order), harus boleh Buka/Tutup Shift

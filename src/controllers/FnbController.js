@@ -32,44 +32,42 @@ class FnbController {
         }
     }
 
-    static async orderGet(req, res, next){
-        // Klien akan mengirim ?date=YYYY-MM-DD
-        // (misal: "2025-11-15")
-        const { date } = req.query; 
+    static async orderGet(req, res, next) {
+        // Ambil 'date' DAN 'status' dari query params
+        const { date, status } = req.query; 
 
         if (!date) {
             return res.status(400).json({ message: "Parameter 'date' (YYYY-MM-DD) diperlukan" });
         }
 
-        // --- INI ADALAH PERBAIKANNYA ---
-        // Kita tidak bisa hanya membandingkan DATE(date) = date
-        // Kita harus mengonversi 'date' (yang UTC) ke '+07:00' (WIB) SEBELUM
-        // mengekstrak tanggalnya.
-        const options = { 
-            where: {
-                order_type: 'fnb', // Filter tipe
-                [Op.and]: [
-                    // Bandingkan string 'YYYY-MM-DD' dari query
-                    // dengan hasil konversi 'date' di database
-                    Sequelize.where(
-                        Sequelize.fn('DATE', Sequelize.fn('CONVERT_TZ', Sequelize.col('date'), '+00:00', '+07:00')), 
-                        '=', 
-                        date
-                    )
-                ]
-            }
+        // Setup filter dasar (Wajib FNB & Tanggal)
+        const whereClause = {
+            order_type: 'fnb',
+            [Op.and]: [
+                Sequelize.where(
+                    Sequelize.fn('DATE', Sequelize.fn('CONVERT_TZ', Sequelize.col('date'), '+00:00', '+07:00')), 
+                    '=', 
+                    date
+                )
+            ]
         };
-        // ---------------------------------
+
+        // ✅ PERBAIKAN UTAMA: Tambahkan filter status jika ada
+        if (status) {
+            whereClause.status = status; // Contoh: 'pending', 'paid', 'cancelled'
+        }
+
+        const options = { 
+            where: whereClause
+        };
 
         try {
-            // Panggil service generik 'getAllOrders'
             const data = await OrderService.getAllOrders(req, options); 
-            data.sort((a, b) => b.order_num - a.order_num); // Urutkan
+            data.sort((a, b) => b.order_num - a.order_num); 
             res.json(data);
         } catch (err) {
-            // Tangani jika 'getAllOrders' gagal (termasuk '404 Data not found')
             if (err.message && err.message.includes('Data not found')) {
-                res.json([]); // Kembalikan array kosong, bukan error
+                res.json([]); 
             } else {
                 LogError(__dirname, 'fnb/api/v1/fnb/orderGet', err.message);
                 res.status(500).json({ message: err.message });
@@ -183,16 +181,35 @@ class FnbController {
         res.status(200).json(reportData);
     };
 
-    static async orderDelete(req, res, next){
-        try{
-            // Panggil service generik
-            const deleted = await OrderService.deleteOrderByOptions(req, {where: {
-                order_type: 'fnb', // Filter tipe
-                // ... (logika 'date')
-            }});
-            res.json(deleted)
-        }catch (err){
-            // ...
+    static async orderDelete(req, res, next) {
+        try {
+            // 1. Ambil order_id dari parameter URL (misal: /fnb/order/fnb-12122025-1)
+            const { order_id } = req.params;
+
+            if (!order_id) {
+                return res.status(400).json({ message: "Order ID is required" });
+            }
+
+            // 2. Panggil Service dengan filter spesifik
+            // Service ini sudah memiliki logika Inventory Restoration (IN) di dalamnya
+            const deleted = await OrderService.deleteOrderByOptions(req, {
+                where: {
+                    order_id: order_id,
+                    order_type: 'fnb' // Safety check: Pastikan hanya menghapus tipe FNB
+                }
+            });
+
+            // 3. Cek hasil
+            if (deleted === 0) {
+                return res.status(404).json({ message: "Order not found or already deleted" });
+            }
+
+            res.json({ message: "Order deleted and stock restored successfully" });
+
+        } catch (err) {
+            LogError(__dirname, 'fnb/api/v1/fnb/orderDelete', err.message);
+            // Handle error spesifik, misal jika order sudah 'paid' dan tidak boleh dihapus
+            res.status(500).json({ message: err.message });
         }
     }
 }

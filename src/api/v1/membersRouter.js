@@ -1,5 +1,5 @@
 const router = require('express').Router();
-const MembersController = require('../../controller/MembersController');
+const MembersController = require('../../controllers/MembersController');
 const mw = require('../../utils/middleware');
 
 router.get('/:plat', MembersController.membersGet)
