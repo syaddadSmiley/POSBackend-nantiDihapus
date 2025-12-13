@@ -29,7 +29,7 @@ module.exports = (sequelize, DataTypes) => {
             type: DataTypes.INTEGER,
             allowNull: true
         },
-        dateclosebill: DataTypes.DATE,
+        // dateclosebill: DataTypes.DATE,
         notes: DataTypes.STRING,
         status: DataTypes.STRING,
         subtotal: {

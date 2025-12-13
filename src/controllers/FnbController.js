@@ -32,29 +32,42 @@ class FnbController {
         }
     }
 
-    static async orderGet(req, res, next) {
-        // Ambil 'date' DAN 'status' dari query params
-        const { date, status } = req.query; 
+   static async orderGet(req, res, next) {
+        // 1. Ambil semua kemungkinan parameter dari query
+        const { date, startDate, endDate, status } = req.query; 
+        const { Op } = require('sequelize'); // Pastikan Op di-import (atau sudah ada di atas file)
 
-        if (!date) {
-            return res.status(400).json({ message: "Parameter 'date' (YYYY-MM-DD) diperlukan" });
+        // 2. Validasi: Harus ada minimal satu jenis filter tanggal
+        if (!date && (!startDate || !endDate)) {
+            return res.status(400).json({ message: "Parameter tanggal (date atau startDate & endDate) diperlukan" });
         }
 
-        // Setup filter dasar (Wajib FNB & Tanggal)
+        // Setup filter dasar (Wajib FNB)
         const whereClause = {
-            order_type: 'fnb',
-            [Op.and]: [
-                Sequelize.where(
-                    Sequelize.fn('DATE', Sequelize.fn('CONVERT_TZ', Sequelize.col('date'), '+00:00', '+07:00')), 
-                    '=', 
-                    date
-                )
-            ]
+            order_type: 'fnb'
         };
 
-        // ✅ PERBAIKAN UTAMA: Tambahkan filter status jika ada
+        // 3. LOGIKA DATE FILTER
+        // Kita gunakan CONVERT_TZ agar sesuai dengan jam lokal (+07:00) seperti logic asli Anda
+        const dateCol = Sequelize.fn('DATE', Sequelize.fn('CONVERT_TZ', Sequelize.col('date'), '+00:00', '+07:00'));
+
+        if (startDate && endDate) {
+            // A. JIKA RANGE (Dipakai oleh Frontend Baru)
+            whereClause[Op.and] = [
+                Sequelize.where(dateCol, {
+                    [Op.between]: [startDate, endDate] // Mencari data DI ANTARA dua tanggal
+                })
+            ];
+        } else if (date) {
+            // B. JIKA SINGLE DATE (Logic Lama / Fallback)
+            whereClause[Op.and] = [
+                Sequelize.where(dateCol, '=', date)
+            ];
+        }
+
+        // 4. Tambahkan filter status jika ada
         if (status) {
-            whereClause.status = status; // Contoh: 'pending', 'paid', 'cancelled'
+            whereClause.status = status; 
         }
 
         const options = { 
@@ -63,13 +76,19 @@ class FnbController {
 
         try {
             const data = await OrderService.getAllOrders(req, options); 
+            // Sorting descending (Terbaru diatas)
             data.sort((a, b) => b.order_num - a.order_num); 
             res.json(data);
         } catch (err) {
             if (err.message && err.message.includes('Data not found')) {
                 res.json([]); 
             } else {
-                LogError(__dirname, 'fnb/api/v1/fnb/orderGet', err.message);
+                // Pastikan LogError terdefinisi atau ganti dengan console.error
+                if (typeof LogError !== 'undefined') {
+                    LogError(__dirname, 'fnb/api/v1/fnb/orderGet', err.message);
+                } else {
+                    console.error(err);
+                }
                 res.status(500).json({ message: err.message });
             }
         }

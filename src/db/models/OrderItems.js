@@ -21,7 +21,7 @@ module.exports = (sequelize, DataTypes) => {
         sub_total_price: DataTypes.INTEGER,
         quantity: DataTypes.INTEGER,
     }, {
-        timestamps: false,
+        timestamps: true,
         freezeTableName: true,
     });
 

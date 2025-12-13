@@ -18,16 +18,16 @@ const db = {};
 const DataTypes = Sequelize.DataTypes;
 
 // ==============================================================================
-// 2. DEFINISI MODEL & RELASI
+// 2. DEFINISI MODEL MANUAL (INLINE)
 // ==============================================================================
 try {
-    // --- MODEL: MENU TYPES ---
+    // --- MODEL: MENU TYPES (Unit Bisnis: F&B, Carwash) ---
     db.menu_types = sequelizeLocal.define('menu_types', {
         id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
         name: { type: DataTypes.STRING }
     }, { freezeTableName: true, timestamps: true });
 
-    // --- MODEL: CATEGORIES ---
+    // --- MODEL: CATEGORIES (Kelompok: Makanan, Minuman, Detailing) ---
     db.categories = sequelizeLocal.define('categories', {
         id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
         name: { type: DataTypes.STRING },
@@ -69,41 +69,11 @@ try {
 }
 
 // ==============================================================================
-// 3. LOGIKA PEMETAAN TIPE MENU (LOGIKA BARU ANDA)
+// 3. KONFIGURASI TARGET MIGRASI
 // ==============================================================================
-// Kita definisikan ID manual agar konsisten
-const TYPE_MAP = {
-    FOOD: 1,      // Untuk MAKANAN
-    BEVERAGE: 2,  // Untuk MINUMAN
-    PROMO: 3,     // Untuk PROMO / BUNDLING
-    RETAIL: 4,    // Untuk IQOS / Barang Retail
-    OTHER: 5      // Default
-};
+// Karena CSV ini berisi menu makanan, kita targetkan ke F&B
+const TARGET_MENU_TYPE_ID = 1; // ID 1 = F&B
 
-function determineMenuTypeId(csvCategoryName) {
-    if (!csvCategoryName) return TYPE_MAP.OTHER;
-    
-    const cat = csvCategoryName.toUpperCase().trim();
-
-    if (cat.includes('MAKANAN') || cat.includes('FOOD') || cat.includes('ROTI') || cat.includes('NASI')) {
-        return TYPE_MAP.FOOD;
-    }
-    if (cat.includes('MINUMAN') || cat.includes('COFFEE') || cat.includes('DRINK') || cat.includes('TEH') || cat.includes('KOPI')) {
-        return TYPE_MAP.BEVERAGE;
-    }
-    if (cat.includes('PROMO') || cat.includes('PAKET')) {
-        return TYPE_MAP.PROMO;
-    }
-    if (cat.includes('IQOS') || cat.includes('VAPE') || cat.includes('DEVICE')) {
-        return TYPE_MAP.RETAIL;
-    }
-
-    return TYPE_MAP.OTHER;
-}
-
-// ==============================================================================
-// 4. EKSEKUSI MIGRASI
-// ==============================================================================
 const CSV_HEADERS = {
     ITEM_NAME: 'Items Name (Do Not Edit)', 
     CATEGORY: 'Category',                  
@@ -116,25 +86,26 @@ const CSV_HEADERS = {
 async function migrateData() {
     try {
         console.log('📦 Sinkronisasi Tabel...');
-        // Gunakan { force: true } jika ingin RESET TOTAL dan data bersih dari awal
+        // Gunakan { alter: true } agar aman
         await sequelizeLocal.sync({ alter: true }); 
 
-        // --- SEED MENU TYPES (Master Data) ---
-        console.log('🌱 Seeding Menu Types...');
-        const types = [
-            { id: TYPE_MAP.FOOD, name: 'Makanan' },
-            { id: TYPE_MAP.BEVERAGE, name: 'Minuman' },
-            { id: TYPE_MAP.PROMO, name: 'Promo & Paket' },
-            { id: TYPE_MAP.RETAIL, name: 'Retail / IQOS' },
-            { id: TYPE_MAP.OTHER, name: 'Lainnya' }
-        ];
-
-        for (const t of types) {
-            const exists = await db.menu_types.findByPk(t.id);
-            if (!exists) await db.menu_types.create(t);
+        // --- SEED MASTER DATA (MENU TYPES) ---
+        console.log('🌱 Seeding Menu Types (Business Units)...');
+        
+        // 1. F&B
+        const fnb = await db.menu_types.findByPk(1);
+        if (!fnb) {
+            await db.menu_types.create({ id: 1, name: 'F&B' });
+            console.log('   ✅ Created: F&B (ID 1)');
         }
-        console.log('✅ Menu Types Ready.');
 
+        // 2. Carwash
+        const carwash = await db.menu_types.findByPk(2);
+        if (!carwash) {
+            await db.menu_types.create({ id: 2, name: 'Carwash' });
+            console.log('   ✅ Created: Carwash (ID 2)');
+        }
+        
     } catch (err) {
         console.error('⚠️ Gagal Sync DB:', err.message);
         process.exit(1);
@@ -171,39 +142,36 @@ async function processImport(dataRows) {
             groupedItems[itemName].push(row);
         });
 
-        console.log(`📦 Memproses ${Object.keys(groupedItems).length} Produk...`);
+        console.log(`📦 Memproses ${Object.keys(groupedItems).length} Produk ke Menu Type: F&B...`);
 
         for (const itemName in groupedItems) {
             const rows = groupedItems[itemName];
             const firstRow = rows[0];
 
-            // 1. TENTUKAN KATEGORI & MENU TYPE ID
+            // 1. CATEGORY (Contoh: "MAKANAN", "MINUMAN")
             let categoryName = firstRow[CSV_HEADERS.CATEGORY];
             if (!categoryName || categoryName.trim() === '') categoryName = 'Uncategorized';
-            categoryName = categoryName.trim();
-
-            // 🔥 LOGIKA PINTAR DI SINI 🔥
-            const targetMenuTypeId = determineMenuTypeId(categoryName);
+            categoryName = categoryName.trim().toUpperCase(); // Rapikan jadi uppercase
             
-            // Find or Create Category
+            // Cari kategori di DB. Jika belum ada, buat baru dan kaitkan ke F&B (ID 1)
             let category = await db.categories.findOne({ where: { name: categoryName }, transaction });
+            
             if (!category) {
-                // Jika kategori baru dibuat, kita pasangkan dengan Menu Type hasil deteksi
+                console.log(`   ➕ New Category: ${categoryName} -> F&B`);
                 category = await db.categories.create({ 
                     name: categoryName,
-                    menu_type_id: targetMenuTypeId 
+                    menu_type_id: TARGET_MENU_TYPE_ID // Selalu ID 1 (F&B) untuk file ini
                 }, { transaction });
-                console.log(`   ➕ Kat: ${categoryName} -> Type ID: ${targetMenuTypeId}`);
             }
 
-            // 2. CREATE ITEM
+            // 2. ITEM
             const newItem = await db.items.create({
                 name: itemName,
                 category_id: category.id,
                 is_active: true
             }, { transaction });
 
-            // 3. CREATE VARIATIONS
+            // 3. VARIATIONS
             for (const row of rows) {
                 let priceRaw = row[CSV_HEADERS.PRICE];
                 let priceClean = 0;
@@ -229,7 +197,7 @@ async function processImport(dataRows) {
         }
 
         await transaction.commit();
-        console.log('\n🎉 SUKSES! Data berhasil dipetakan sesuai Tipe Menu.');
+        console.log('\n🎉 SUKSES! Data berhasil dimigrasi.');
         process.exit(0);
 
     } catch (error) {
