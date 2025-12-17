@@ -1,65 +1,35 @@
-// file: src/controllers/DashboardController.js (BACKEND)
-const { Op } = require('sequelize');
+// file: src/controllers/DashboardController.js
+
+const DashboardService = require('../services/DashboardService');
 const { LogError } = require('../utils');
-const moment = require('moment'); // Pastikan moment sudah terinstall
+const moment = require('moment');
 
 class DashboardController {
 
     static async getStats(req, res) {
         try {
-            const db = req.app.get('db');
-            
-            // Tentukan rentang waktu "Hari Ini" (00:00 - 23:59 WIB)
-            // Backend biasanya UTC, jadi kita harus hati-hati. 
-            // Cara aman: Gunakan raw query atau filter berdasarkan string tanggal YYYY-MM-DD
-            
-            const today = moment().format('YYYY-MM-DD');
+            // 1. Ambil Parameter Tanggal
+            // Default: Hari ini jika tidak ada parameter
+            let { startDate, endDate } = req.query;
 
-            // 1. Hitung Total Omzet & Total Transaksi Hari Ini
-            // Kita hitung dari tabel 'orders' yang statusnya != 'cancelled'
-            const salesData = await db.orders.findAll({
-                attributes: [
-                    [db.sequelize.fn('SUM', db.sequelize.col('total')), 'total_revenue'],
-                    [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'total_transactions']
-                ],
-                where: {
-                    // Filter tanggal hari ini
-                    [Op.and]: [
-                        db.sequelize.where(
-                            db.sequelize.fn('DATE', db.sequelize.fn('CONVERT_TZ', db.sequelize.col('date'), '+00:00', '+07:00')),
-                            today
-                        ),
-                        { status: { [Op.ne]: 'cancelled' } } // Jangan hitung yang batal
-                    ]
-                },
-                raw: true
-            });
+            if (!startDate || !endDate) {
+                startDate = moment().startOf('day').format('YYYY-MM-DD HH:mm:ss');
+                endDate = moment().endOf('day').format('YYYY-MM-DD HH:mm:ss');
+            } else {
+                // Pastikan format jam mencakup seluruh hari (00:00:00 - 23:59:59)
+                startDate = moment(startDate).startOf('day').format('YYYY-MM-DD HH:mm:ss');
+                endDate = moment(endDate).endOf('day').format('YYYY-MM-DD HH:mm:ss');
+            }
 
-            const totalRevenue = salesData[0].total_revenue || 0;
-            const totalTransactions = salesData[0].total_transactions || 0;
+            // 2. Panggil Service
+            const data = await DashboardService.getDashboardStats(req, startDate, endDate);
 
-            // 2. Cek Shift Aktif
-            // Cari user yang punya shift dengan status 'open'
-            const activeShift = await db.shifts.findOne({
-                where: { status: 'open' },
-                include: [{ model: db.users, as: 'user', attributes: ['name'] }],
-                order: [['createdAt', 'DESC']]
-            });
+            // 3. Response
+            res.json(data);
 
-            // 3. Produk Terlaris Hari Ini (Query agak kompleks, opsional dulu)
-            // Untuk sekarang kita hardcode dulu atau buat query order_items
-            // Kita skip dulu agar endpoint cepat selesai, atau Anda mau sekalian?
-            
-            res.json({
-                revenue: parseInt(totalRevenue),
-                transactions: parseInt(totalTransactions),
-                active_shift: activeShift ? activeShift.user.name : "Tidak ada",
-                top_product: "Kopi Susu" // Placeholder dulu
-            });
-
-        } catch (error) {
-            LogError(__dirname, 'DashboardController.getStats', error.message);
-            res.status(500).json({ message: error.message });
+        } catch (err) {
+            LogError(__dirname, 'dashboard/getStats', err.message);
+            res.status(500).json({ message: 'Gagal memuat data dashboard' });
         }
     }
 }

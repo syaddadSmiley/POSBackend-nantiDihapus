@@ -36,6 +36,18 @@ module.exports = (sequelize, DataTypes) => {
             type: DataTypes.INTEGER,
             allowNull: false,
         },
+        void_reason: { 
+            type: DataTypes.STRING,
+            allowNull: true
+        },
+        voided_at: {
+            type: DataTypes.DATE,
+            allowNull: true
+        },
+        voided_by: { // ID User (Supervisor)
+            type: DataTypes.INTEGER,
+            allowNull: true
+        },
         total_tax: {
             type: DataTypes.INTEGER,
             allowNull: false,

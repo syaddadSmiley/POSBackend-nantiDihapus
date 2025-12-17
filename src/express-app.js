@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const { fnb, carwash } = require('./api');
 const { LogAny  } = require('./utils');
 const router = require('./api');
@@ -16,7 +17,7 @@ module.exports = async (app) => {
         exposedHeaders: ["Set-Cookie"]
     };
     app.use(cors(corsOptions));
-    app.use(express.static(__dirname + '/public'))
+    app.use(express.static(path.join(__dirname, 'public')));
     app.use((req, res, next) => {
         LogAny(__dirname, 'index', `a request has been made with the following info | ${req.method} | ${req.ip} | ${req.url} | ${req.headers['user-agent']} ${JSON.stringify(req.body)} ${JSON.stringify(req.query)}`, 'info');
         next();

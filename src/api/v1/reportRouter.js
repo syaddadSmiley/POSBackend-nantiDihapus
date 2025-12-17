@@ -1,15 +1,14 @@
 // file: src/api/v1/reportRouter.js
 const router = require('express').Router();
-const ReportController = require('../../controllers/ReportController');
+const DashboardController = require('../../controllers/DashboardController'); // Pakai Controller Baru
+const ReportController = require('../../controllers/ReportController'); // Untuk Sales Report biasa
 const mw = require('../../utils/middleware');
 
-// --- 1. DASHBOARD STATS (Real-time Hari Ini) ---
-// URL Baru: /api/v1/reports/dashboard
-// (Memanggil fungsi getDashboardStats di Controller yang sudah kita gabung)
-router.get('/dashboard', mw.verifyToken, mw.can('report.sales'), ReportController.getDashboardStats);
+// --- DASHBOARD STATS (ENTERPRISE) ---
+// Gunakan DashboardController yang sudah support filter tanggal & fitur lengkap
+router.get('/dashboard/stats', mw.verifyToken, mw.can('report.sales'), DashboardController.getStats);
 
-// --- 2. SALES REPORT (Historis Range Tanggal) ---
-// URL: /api/v1/reports/sales
+// --- SALES REPORT (TABEL) ---
 router.get('/sales', mw.verifyToken, mw.can('report.sales'), ReportController.getSales);
 
 module.exports = router;

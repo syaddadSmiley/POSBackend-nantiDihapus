@@ -1,6 +1,6 @@
 
 const router = require('express').Router();
-const fnbRouter = require('./orderRouter');
+const orderRouter = require('./orderRouter');
 const authRouter = require('./authRouter');
 const menuRouter = require('./menuRouter');
 const membersRouter = require('./membersRouter')
@@ -10,7 +10,7 @@ const reportRouter = require('./reportRouter');
 const userRouter = require('./userRouter');
 const inventoryRouter = require('./inventoryRouter');
 
-router.use('/fnb', fnbRouter);
+router.use('/fnb', orderRouter);
 router.use('/auth', authRouter);
 router.use('/menu', menuRouter);
 router.use('/members', membersRouter);

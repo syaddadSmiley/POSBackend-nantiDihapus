@@ -1,49 +1,35 @@
-// file: models/Tax.js
-
 module.exports = (sequelize, DataTypes) => {
-    const Tax = sequelize.define('taxes', {
+    const ItemVariationTaxes = sequelize.define('item_variation_taxes', {
         id: {
             type: DataTypes.INTEGER,
             primaryKey: true,
             autoIncrement: true,
             allowNull: false
         },
-        name: { // Misal: "PPN", "PB1 (Pajak Restoran)"
-            type: DataTypes.STRING,
+        item_variation_id: {
+            type: DataTypes.INTEGER,
             allowNull: false,
-            unique: true
+            references: {
+                model: 'item_variations',
+                key: 'id'
+            },
+            onDelete: 'CASCADE',
+            onUpdate: 'CASCADE'
         },
-        rate: { // Tarif dalam persentase, misal: 11 (untuk 11%)
-            type: DataTypes.DECIMAL(5, 2), // Cukup untuk angka seperti 11.00
-            allowNull: false
-        },
-        type: { // 'PERCENTAGE' atau 'FIXED'
-            type: DataTypes.STRING,
+        tax_id: {
+            type: DataTypes.INTEGER,
             allowNull: false,
-            defaultValue: 'PERCENTAGE'
-        },
-        is_inclusive: {
-            // Menandakan apakah harga item SUDAH termasuk pajak ini?
-            // false = Harga Exclusive (pajak ditambahkan di akhir)
-            // true = Harga Inclusive (pajak sudah termasuk)
-            type: DataTypes.BOOLEAN,
-            allowNull: false,
-            defaultValue: false 
+            references: {
+                model: 'taxes',
+                key: 'id'
+            },
+            onDelete: 'CASCADE',
+            onUpdate: 'CASCADE'
         }
     }, {
-        freezeTableName: true,
-        timestamps: false,
+        tableName: 'item_variation_taxes',
+        timestamps: true
     });
 
-    Tax.associate = function (models) {
-        // Satu Pajak bisa diterapkan ke BANYAK Variasi (via tabel junction)
-        Tax.belongsToMany(models.item_variations, {
-            through: 'item_variation_taxes', // Nama tabel junction
-            foreignKey: 'tax_id',
-            otherKey: 'item_variation_id',
-            timestamps: false
-        });
-    };
-
-    return Tax;
-}
+    return ItemVariationTaxes;
+};

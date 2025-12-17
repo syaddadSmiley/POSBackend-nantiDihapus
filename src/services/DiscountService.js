@@ -1,64 +1,93 @@
-// src/services/DiscountService.js
-const { discounts, order_discounts, orders, sequelize } = require('../db/models');
+const { BaseRepository } = require('../db');
+const { LogError } = require('../utils');
 const { Op } = require('sequelize');
+const _ = require('lodash');
 
 class DiscountService {
-  /**
-   * Memvalidasi apakah sebuah kode diskon valid untuk digunakan.
-   * @param {string} code - Kode voucher yang diinput user.
-   * @param {number} subtotal - Subtotal belanja saat ini.
-   * @param {number} userId - ID user/member (opsional).
-   * @returns {Object} Objek diskon yang valid.
-   */
-  async validateDiscount(code, subtotal, userId = null) {
-    const discount = await discounts.findOne({ where: { code: code, is_active: true } });
 
-    if (!discount) throw new Error('Kode diskon tidak valid.');
-    if (new Date() < discount.start_date || new Date() > discount.end_date) throw new Error('Diskon tidak berlaku pada periode ini.');
-    if (subtotal < discount.min_order_amount) throw new Error(`Minimum belanja untuk diskon ini adalah Rp ${discount.min_order_amount}`);
-    if (discount.usage_limit_total > 0 && discount.current_usage >= discount.usage_limit_total) throw new Error('Kuota diskon ini sudah habis.');
+    /**
+     * Validate if a voucher code is applicable
+     */
+    static async validateDiscount(req, code, subtotal, userId = null) {
+        try {
+            const db = req.app.get('db');
+            const now = new Date();
 
-    // Validasi kuota per user jika ada
-    if (userId && discount.usage_limit_per_user > 0) {
-      const userUsage = await order_discounts.count({ where: { discount_id: discount.id, '$order.user_id$': userId }, include: 'order' });
-      if (userUsage >= discount.usage_limit_per_user) throw new Error('Anda sudah mencapai batas penggunaan diskon ini.');
+            // 1. Cari Voucher
+            const discount = await db.discounts.findOne({
+                where: {
+                    code: code,
+                    is_active: true,
+                    start_date: { [Op.lte]: now }, // Mulai sebelum sekarang
+                    end_date: { [Op.gte]: now }    // Berakhir setelah sekarang
+                }
+            });
+
+            if (!discount) {
+                throw new Error(`Kode voucher '${code}' tidak ditemukan atau kadaluarsa.`);
+            }
+
+            // 2. Cek Kuota Global
+            if (discount.usage_limit_total > 0 && discount.current_usage >= discount.usage_limit_total) {
+                throw new Error(`Voucher '${code}' usage limit reached.`);
+            }
+
+            // 3. Cek Minimum Belanja
+            if (subtotal < discount.min_order_amount) {
+                throw new Error(`Minimum spend for '${code}' is Rp ${discount.min_order_amount.toLocaleString('id-ID')}`);
+            }
+
+            // 4. Cek Kuota Per User (Optional - Jika sistem member aktif)
+            if (userId && discount.usage_limit_per_user > 0) {
+                // Hitung berapa kali user ini sudah pakai voucher ini di tabel order_discounts join orders
+                // Logic ini bisa ditambahkan nanti jika fitur member sudah matang
+            }
+
+            return discount;
+
+        } catch (error) {
+            LogError(__dirname, 'DiscountService.validateDiscount', error.message);
+            throw error;
+        }
     }
-    
-    return discount;
-  }
 
-  /**
-   * Menghitung jumlah potongan berdasarkan aturan diskon.
-   * @param {Object} discount - Objek diskon dari DB.
-   * @param {number} subtotal - Subtotal belanja.
-   * @returns {number} Jumlah potongan dalam Rupiah.
-   */
-  calculateDiscountAmount(discount, subtotal) {
-    let amount = 0;
-    if (discount.type === 'FIXED') {
-      amount = discount.value;
-    } else if (discount.type === 'PERCENTAGE') {
-      amount = Math.floor((subtotal * discount.value) / 100);
-      if (discount.max_discount_amount > 0) {
-        amount = Math.min(amount, discount.max_discount_amount);
-      }
+    /**
+     * Calculate discount amount based on type
+     */
+    static calculateAmount(discount, baseAmount) {
+        let cutAmount = 0;
+
+        if (discount.type === 'FIXED') {
+            cutAmount = discount.value;
+        } else if (discount.type === 'PERCENTAGE') {
+            cutAmount = Math.round(baseAmount * (discount.value / 100));
+            
+            // Cek Max Discount Cap
+            if (discount.max_discount_amount > 0 && cutAmount > discount.max_discount_amount) {
+                cutAmount = discount.max_discount_amount;
+            }
+        }
+
+        // Diskon tidak boleh melebihi harga barang (Safety)
+        return Math.min(cutAmount, baseAmount);
     }
-    return Math.min(amount, subtotal);
-  }
 
-  /**
-   * Menerapkan diskon ke order dalam sebuah transaksi database.
-   */
-  async applyDiscountToOrder(transaction, { orderId, discountRule, calculatedAmount }) {
-    await order_discounts.create({
-      order_id: orderId,
-      discount_id: discountRule.id,
-      name: discountRule.name,
-      amount: calculatedAmount,
-    }, { transaction });
-
-    await discounts.increment('current_usage', { by: 1, where: { id: discountRule.id }, transaction });
-  }
+    /**
+     * Increment usage counter
+     */
+    static async incrementUsage(req, discountId, transaction) {
+        try {
+            const db = req.app.get('db');
+            await db.discounts.increment('current_usage', { 
+                by: 1, 
+                where: { id: discountId },
+                transaction 
+            });
+        } catch (error) {
+            LogError(__dirname, 'DiscountService.incrementUsage', error.message);
+            throw error;
+        }
+    }
 }
 
-module.exports = new DiscountService();
+module.exports = DiscountService;

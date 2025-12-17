@@ -46,14 +46,27 @@ module.exports = (sequelize, DataTypes) => {
 
     ItemVariations.associate = function (models) {
         // Satu Variasi (Small) dimiliki oleh SATU Item (Cuci Mobil)
-        ItemVariations.belongsTo(models.items, { foreignKey: 'item_id', onDelete: 'CASCADE' });
+        ItemVariations.belongsTo(models.items, { 
+            foreignKey: 'item_id', 
+            onDelete: 'CASCADE',
+            as: 'item' 
+        });
+
+        // Relasi lain
         ItemVariations.belongsToMany(models.taxes, {
-            through: 'item_variation_taxes', // Nama tabel junction
+            through: 'item_variation_taxes',
             foreignKey: 'item_variation_id',
             otherKey: 'tax_id',
             as: 'taxes',
             timestamps: false
         });
+        
+        ItemVariations.hasMany(models.order_items, {
+            foreignKey: 'item_variation_id',
+            as: 'order_items'
+        });
+
+        
     };
     
     return ItemVariations;

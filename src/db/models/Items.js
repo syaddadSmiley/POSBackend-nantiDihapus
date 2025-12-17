@@ -35,28 +35,26 @@ module.exports = (sequelize, DataTypes) => {
     });
 
     Items.associate = function (models) {
-        // Relasi ke Kategori
-        Items.belongsTo(models.categories, { foreignKey: 'category_id', onDelete: 'CASCADE' });
         
-        // Relasi ke Variasi
+        Items.belongsTo(models.categories, { 
+            foreignKey: 'category_id', 
+            onDelete: 'CASCADE',
+            as: 'category' 
+        });
+        
         Items.hasMany(models.item_variations, { 
             foreignKey: 'item_id', 
             onDelete: 'CASCADE',
             as: 'item_variations'
         });
         
-        // Relasi ke Tags (jika ada)
         Items.hasMany(models.item_tags, { foreignKey: 'item_id', onDelete: 'CASCADE' });
 
-        // --- RELASI WAJIB UNTUK MODIFIER ---
         Items.belongsToMany(models.modifier_lists, {
-            through: 'item_modifier_lists', // Nama tabel junction
+            through: 'item_modifier_lists',
             foreignKey: 'item_id',
             otherKey: 'modifier_list_id',
-            as: 'modifierLists', // <--- ALIAS PENTING (CamelCase)
-            // Dengan alias 'modifierLists', Sequelize membuat fungsi:
-            // newItem.setModifierLists()
-            // newItem.getModifierLists()
+            as: 'modifierLists',
         });
     };
 

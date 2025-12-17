@@ -2,6 +2,7 @@
 
 const _ = require('lodash');
 const OrderService = require('../services/OrderService'); // <-- GANTI INI
+const VoucherService = require('../services/VoucherService');
 const async = require('async');
 const { LogError, LogAny } = require('../utils');
 const email = require('../utils/email');
@@ -10,6 +11,57 @@ const moment = require('moment');
 
 // HAPUS 'extends FnbService'
 class FnbController {
+
+    static async orderCalculate(req, res, next) {
+        const payload = req.body;
+        try {
+            // Using the new calculation service
+            const result = await OrderService.calculateOrder(req, payload);
+            res.json(result);
+        } catch (err) {
+            LogError(__dirname, 'fnb/api/v1/fnb/calculate', err.message);
+            // Return 400 so Android knows calculation failed
+            res.status(400).json({ message: err.message });
+        }
+    }
+
+    static async voucherGet(req, res) {
+        try {
+            const result = await VoucherService.getAllVouchers(req, req.query);
+            res.json(result);
+        } catch (err) {
+            res.status(500).json({ message: err.message });
+        }
+    }
+
+    static async voucherPost(req, res) {
+        try {
+            const result = await VoucherService.createVoucher(req, req.body);
+            res.status(201).json(result);
+        } catch (err) {
+            res.status(400).json({ message: err.message });
+        }
+    }
+
+    static async voucherPut(req, res) {
+        try {
+            const { id } = req.params;
+            const result = await VoucherService.updateVoucher(req, id, req.body);
+            res.json({ message: "Voucher updated", data: result });
+        } catch (err) {
+            res.status(400).json({ message: err.message });
+        }
+    }
+
+    static async voucherDelete(req, res) {
+        try {
+            const { id } = req.params;
+            await VoucherService.deleteVoucher(req, id);
+            res.json({ message: "Voucher deleted" });
+        } catch (err) {
+            res.status(400).json({ message: err.message });
+        }
+    }
 
     static async orderPost(req, res, next){
         const payload  = req.body;
@@ -202,32 +254,42 @@ class FnbController {
 
     static async orderDelete(req, res, next) {
         try {
-            // 1. Ambil order_id dari parameter URL (misal: /fnb/order/fnb-12122025-1)
             const { order_id } = req.params;
+            const { reason } = req.body; // Input wajib dari Frontend (Modal Void)
+            
+            // Ambil ID user yang login (Supervisor) dari token
+            const userId = req.decoded?.payloadToken?.id || req.user?.id || null; 
 
+            // 1. Validasi Input Dasar
             if (!order_id) {
                 return res.status(400).json({ message: "Order ID is required" });
             }
 
-            // 2. Panggil Service dengan filter spesifik
-            // Service ini sudah memiliki logika Inventory Restoration (IN) di dalamnya
-            const deleted = await OrderService.deleteOrderByOptions(req, {
-                where: {
-                    order_id: order_id,
-                    order_type: 'fnb' // Safety check: Pastikan hanya menghapus tipe FNB
+            // 2. Validasi Alasan (Strict Mode)
+            // Supervisor wajib mengisi alasan kenapa order di-void
+            if (!reason || typeof reason !== 'string' || reason.trim() === "") {
+                return res.status(400).json({ message: "Alasan pembatalan (reason) wajib diisi untuk audit." });
+            }
+
+            // 3. Panggil Service Void Robust
+            const result = await OrderService.voidOrder(req, order_id, reason, userId);
+
+            res.json({ 
+                message: "Pesanan berhasil dibatalkan (Void). Stok telah dikembalikan.", 
+                data: {
+                    order_id: result.order_id,
+                    status: result.status,
+                    voided_at: result.voided_at
                 }
             });
 
-            // 3. Cek hasil
-            if (deleted === 0) {
-                return res.status(404).json({ message: "Order not found or already deleted" });
-            }
-
-            res.json({ message: "Order deleted and stock restored successfully" });
-
         } catch (err) {
+            // Error Handling Spesifik
+            if (err.message.includes('sudah dibatalkan')) {
+                return res.status(409).json({ message: err.message }); // 409 Conflict
+            }
+            
             LogError(__dirname, 'fnb/api/v1/fnb/orderDelete', err.message);
-            // Handle error spesifik, misal jika order sudah 'paid' dan tidak boleh dihapus
             res.status(500).json({ message: err.message });
         }
     }

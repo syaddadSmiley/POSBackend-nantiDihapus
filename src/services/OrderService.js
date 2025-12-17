@@ -7,6 +7,7 @@ const { Op } = require('sequelize');
 const { sequelize } = require('../db/models');
 const moment = require('moment');
 const InventoryService = require('./InventoryService');
+const DiscountService = require('./DiscountService');
 
 class OrderService {
     
@@ -54,11 +55,14 @@ class OrderService {
      * [ { variation_id: 132, quantity: 1, modifier_ids: [1, 2], item_name: "...", item_price: ..., sub_total_price: ... }, ... ]
      */
     static async createOrder(req, data) {
+        // Use global sequelize if not passed in req, but prefer req.app.get('db') structure
         const transaction = await sequelize.transaction();
+        
         try {
             const db = req.app.get('db');
             if (_.isEmpty(data)) throw new Error('Data is empty');
 
+            // --- 1. SETUP & ORDER ID GENERATION (KEPT YOUR LOGIC) ---
             let userId = req.decoded?.payloadToken?.id || req.user?.id || null;
             const clientDate = new Date(data.date); 
             
@@ -71,15 +75,19 @@ class OrderService {
             data.order_id = `${data.order_type}-${dateFormat_id}-${data.order_num}`;
             data.date = clientDate;
 
+            // --- 2. CALCULATION LOOP (KEPT YOUR LOGIC + OPTIMIZED) ---
             let calculatedSubtotal = 0;
             let calculatedTotalTax = 0;
+            
+            // We store detailed items here to avoid re-fetching DB during insertion phase
+            const processedItems = []; 
 
             for (const item of data.order_items) {
-                // 1. Ambil Data Variasi & Pajak dari DB (Secure)
+                // A. Securely fetch Price & Tax
                 const variation = await db.item_variations.findByPk(item.variation_id, {
                     include: [{
                         model: db.taxes,
-                        as: 'taxes', // Pastikan alias sesuai model Anda
+                        as: 'taxes',
                         through: { attributes: [] } 
                     }],
                     transaction
@@ -87,46 +95,80 @@ class OrderService {
 
                 if (!variation) throw new Error(`Variation ID ${item.variation_id} not found`);
 
-                // 2. Hitung Subtotal Item
-                // (Harga x Quantity)
+                // B. Calc Subtotal
                 const itemSubtotal = variation.price * item.quantity;
                 calculatedSubtotal += itemSubtotal;
 
-                // 3. Hitung Pajak Item
-                // Jika item punya pajak (misal: PPN 11% atau PB1 10%)
+                // C. Calc Tax (Your existing logic)
                 if (variation.taxes && variation.taxes.length > 0) {
                     for (const tax of variation.taxes) {
                         if (tax.type === 'PERCENTAGE') {
-                            // Rumus: (Harga x Qty) * (Rate / 100)
                             const taxAmount = Math.round(itemSubtotal * (parseFloat(tax.rate) / 100));
                             calculatedTotalTax += taxAmount;
                         } 
-                        // Jika ada tipe FIXED, tambahkan logika di sini
+                        // Add FIXED logic here if needed in future
                     }
                 }
+
+                // Push to array for step 6 (Inventory)
+                processedItems.push({
+                    inputItem: item,
+                    variationDB: variation,
+                    subtotal: itemSubtotal
+                });
             }
 
-            // 4. Hitung Diskon (Logic Diskon yg sudah kita bahas)
-            const { discount_type, discount_value } = data;
-            let discountAmount = 0;
+            // --- 3. DISCOUNT PROCESSING (UPGRADED) ---
+            // Replaced your old "Section 4" with DiscountService
+            
+            let totalDiscountAmount = 0;
+            const appliedDiscounts = []; // For order_discounts table
 
-            if (discount_type && discount_value > 0) {
-                if (discount_type === 'percentage') {
-                    discountAmount = Math.round(calculatedSubtotal * (discount_value / 100));
-                } else if (discount_type === 'fixed') {
-                    discountAmount = discount_value;
+            // Check if frontend sent voucherCodes (Array)
+            if (data.voucherCodes && Array.isArray(data.voucherCodes) && data.voucherCodes.length > 0) {
+                const uniqueCodes = [...new Set(data.voucherCodes)]; // Remove duplicates
+
+                for (const code of uniqueCodes) {
+                    // A. Validate
+                    const discount = await DiscountService.validateDiscount(req, code, calculatedSubtotal, userId);
+                    
+                    // B. Calculate
+                    const amount = DiscountService.calculateAmount(discount, calculatedSubtotal);
+                    
+                    // C. Accumulate
+                    totalDiscountAmount += amount;
+
+                    // D. Prepare Snapshot
+                    appliedDiscounts.push({
+                        discount_id: discount.id,
+                        name: discount.name,
+                        amount: amount,
+                        level: 'ORDER'
+                    });
+
+                    // E. Increment Usage
+                    await DiscountService.incrementUsage(req, discount.id, transaction);
                 }
+            } 
+            // FALLBACK: Keep support for your old single discount_type (Backward Compatibility)
+            else if (data.discount_type && data.discount_value > 0) {
+                 if (data.discount_type === 'percentage') {
+                    totalDiscountAmount = Math.round(calculatedSubtotal * (data.discount_value / 100));
+                } else if (data.discount_type === 'fixed') {
+                    totalDiscountAmount = data.discount_value;
+                }
+                // Optional: You might want to log this as a "Manual Discount" in order_discounts table too
             }
-            // Validasi agar diskon tidak minus
-            if (discountAmount > calculatedSubtotal) discountAmount = calculatedSubtotal;
 
-            // 5. Final Total
-            // Rumus: (Subtotal - Diskon) + Pajak
-            const finalTotal = (calculatedSubtotal - discountAmount) + calculatedTotalTax;
+            // Safety Cap
+            if (totalDiscountAmount > calculatedSubtotal) totalDiscountAmount = calculatedSubtotal;
 
-            // ---------------------------------------------------------
-            // 💾 SIMPAN KE DATABASE
-            // ---------------------------------------------------------
+            // --- 4. FINAL TOTAL (KEPT YOUR FORMULA) ---
+            // (Subtotal - Discount) + Tax
+            // Note: This assumes Tax is calculated on Gross Sales (Pre-discount). 
+            const finalTotal = (calculatedSubtotal - totalDiscountAmount) + calculatedTotalTax;
+
+            // --- 5. INSERT ORDER HEADER (UPDATED FIELDS) ---
             const orderData = {
                 order_id: data.order_id,
                 order_num: data.order_num,
@@ -135,34 +177,38 @@ class OrderService {
                 notes: data.notes,
                 status: data.status,
                 
-                // --- VALUE TERPISAH ---
-                subtotal: calculatedSubtotal,       // Murni harga barang
-                discount_type: discount_type || null,
-                discount_value: discount_value || 0,
-                discount_amount: discountAmount,    // Nilai potongan
-                total_tax: calculatedTotalTax,      // Nilai pajak terpisah
-                total: finalTotal,                  // Yang harus dibayar
-                // ----------------------
-
+                // Financials
+                subtotal: calculatedSubtotal,
+                discount_amount: totalDiscountAmount, // Updated variable
+                total_tax: calculatedTotalTax,
+                total: finalTotal,
+                
+                // Meta
                 metode_pembayaran: data.metode_pembayaran,
                 member_id: data.member_id,
-                voucher_id: data.voucher_id,
                 user_id: userId
             };
 
             const createdOrder = await BaseRepository.create(req, orderData, 'orders', { transaction });
+
+            // --- 6. INSERT ORDER DISCOUNTS (NEW) ---
+            if (appliedDiscounts.length > 0) {
+                const discountRecords = appliedDiscounts.map(d => ({
+                    ...d,
+                    order_id: createdOrder.dataValues.order_id
+                }));
+                await db.order_discounts.bulkCreate(discountRecords, { transaction });
+            }
             
-            // LOOP ITEMS
-            for (const item of data.order_items) {
-                const variationId = item.variation_id;
+            // --- 7. INSERT ITEMS & INVENTORY (KEPT YOUR LOGIC) ---
+            // Using processedItems array to allow cleaner loop
+            for (const pItem of processedItems) {
+                const item = pItem.inputItem;
                 const quantity = item.quantity;
+                const variationId = item.variation_id;
                 const modifierIds = item.modifier_ids || [];
 
-                // ---------------------------------------------------------
-                // 1. LOGIKA STOK VARIASI (Gunakan InventoryService) 
-                // ---------------------------------------------------------
-                // Fungsi ini otomatis cek track_inventory, cek stok cukup/tidak,
-                // kurangi stok, DAN buat log history.
+                // A. Inventory Service (Variations) - YOUR TRUSTED LOGIC
                 await InventoryService.updateStock(req, {
                     variation_id: variationId,
                     type: 'OUT',
@@ -170,10 +216,7 @@ class OrderService {
                     notes: `Order #${data.order_num}`
                 }, transaction);
 
-                // ---------------------------------------------------------
-                // 2. LOGIKA STOK MODIFIER (Masih Manual)
-                // ---------------------------------------------------------
-                // Karena InventoryLog belum support modifier_id, kita pakai cara lama
+                // B. Modifier Stock Check - YOUR TRUSTED LOGIC
                 for (const modId of modifierIds) {
                     const modifier = await db.modifiers.findByPk(modId, { transaction, lock: true });
                     if (!modifier) throw new Error(`Modifier ${modId} not found`);
@@ -187,22 +230,24 @@ class OrderService {
                     }
                 }
 
+                // C. Insert Order Item
                 const createdOrderItem = await BaseRepository.create(req, {
                     order_id: createdOrder.dataValues.order_id,
                     item_variation_id: variationId,
-                    item_name: item.item_name,
-                    item_price: item.item_price,
-                    sub_total_price: item.sub_total_price,
+                    item_name: item.item_name, // Or use pItem.variationDB.name to be safer? Stick to input if you trust frontend names
+                    item_price: pItem.variationDB.price, // Use DB price, not frontend price
+                    sub_total_price: pItem.subtotal,
                     quantity: quantity,
                 }, 'order_items', { transaction });
 
+                // D. Insert Modifiers
                 for (const modId of modifierIds) {
                     const modifier = await db.modifiers.findByPk(modId, { transaction });
                     await BaseRepository.create(req, {
                         order_item_id: createdOrderItem.dataValues.id,
                         modifier_id: modId,
                         component_name: modifier.name,
-                        component_price: modifier.add_price
+                        component_price: modifier.add_price // Or modifier.price depending on your DB column
                     }, 'order_item_modifiers', { transaction });
                 }
             }
@@ -213,7 +258,162 @@ class OrderService {
         } catch (err) {
             if (!transaction.finished) await transaction.rollback();
             LogError(__dirname, 'OrderService.createOrder', err.message);
-            throw err; // Lempar error agar ditangkap Controller
+            throw err;
+        }
+    }
+
+    static async calculateOrder(req, data) {
+        try {
+            const db = req.app.get('db');
+            if (_.isEmpty(data)) throw new Error('Data is empty');
+
+            let tempItems = [];
+            let grossSubtotal = 0; // Total Kotor sebelum diskon
+
+            for (const item of data.order_items) {
+                // A. Ambil Variasi & Pajak
+                const variation = await db.item_variations.findByPk(item.variation_id, {
+                    include: [{
+                        model: db.taxes,
+                        as: 'taxes',
+                        through: { attributes: [] } 
+                    }]
+                });
+
+                if (!variation) throw new Error(`Variation ID ${item.variation_id} not found`);
+
+                // B. Hitung Harga Dasar (Variation + Modifiers)
+                let unitPrice = variation.price; 
+
+                if (item.modifier_ids && Array.isArray(item.modifier_ids) && item.modifier_ids.length > 0) {
+                    const modifiers = await db.modifiers.findAll({
+                        where: { id: { [Op.in]: item.modifier_ids } }
+                    });
+                    for (const mod of modifiers) unitPrice += mod.add_price;
+                }
+
+                const lineGross = unitPrice * item.quantity;
+                grossSubtotal += lineGross;
+
+                // Simpan ke memory untuk perhitungan pajak nanti
+                tempItems.push({
+                    name: item.item_name,
+                    quantity: item.quantity,
+                    gross: lineGross,
+                    taxes: variation.taxes || [] // Array object pajak
+                });
+            }
+
+            // --- STEP 2: CALCULATE GLOBAL DISCOUNT ---
+            let totalDiscountAmount = 0;
+            const voucherDetails = [];
+
+            if (data.voucherCodes && Array.isArray(data.voucherCodes) && data.voucherCodes.length > 0) {
+                // Pastikan unik dan TRIMMING
+                const uniqueCodes = [...new Set(data.voucherCodes.map(c => c.trim()))];
+                const userId = req.decoded?.payloadToken?.id || null;
+
+                console.log("Processing Vouchers:", uniqueCodes); // DEBUG LOG 1
+
+                for (const code of uniqueCodes) {
+                    try {
+                        console.log(`Validating Code: ${code}`); // DEBUG LOG 2
+                        
+                        // Validasi
+                        const discount = await DiscountService.validateDiscount(req, code, grossSubtotal, userId);
+                        
+                        // Hitung
+                        const amount = DiscountService.calculateAmount(discount, grossSubtotal);
+                        
+                        totalDiscountAmount += amount;
+                        
+                        voucherDetails.push({ 
+                            code: code, 
+                            amount: amount, 
+                            valid: true, 
+                            error: null 
+                        });
+                        console.log(`Code ${code} VALID. Amount: ${amount}`); // DEBUG LOG 3
+
+                    } catch (err) {
+                        console.error(`Code ${code} INVALID: ${err.message}`); // DEBUG LOG 4
+                        
+                        // PENTING: Push status error agar frontend tahu!
+                        voucherDetails.push({ 
+                            code: code, 
+                            amount: 0, 
+                            valid: false, 
+                            error: err.message || "Voucher tidak valid"
+                        });
+                    }
+                }
+            } else {
+                 console.log("No Voucher Codes received"); // DEBUG LOG 5
+            }
+
+            // Safety: Diskon tidak boleh melebihi subtotal
+            if (totalDiscountAmount > grossSubtotal) totalDiscountAmount = grossSubtotal;
+
+
+            // --- STEP 3: DISTRIBUTE DISCOUNT & CALCULATE TAX (THE ENTERPRISE WAY) ---
+            let calculatedTotalTax = 0;
+            
+            // NOTE: Di Indonesia, Service Charge biasanya masuk sebagai "Tax" dengan nama berbeda di DB
+            // atau kolom terpisah. Asumsi di sini: Service Charge adalah salah satu item di tabel `taxes`.
+            // Jika Service Charge dan PB1 dipisah logic-nya, kita butuh flag khusus di tabel taxes (misal: is_service_charge).
+            
+            // Untuk keakuratan akuntansi, kita hitung pajak per item SETELAH diskon dipro-rata.
+            
+            for (const item of tempItems) {
+                if (item.gross <= 0) continue;
+
+                // 1. Hitung porsi diskon untuk item ini (Pro-rata)
+                // Rumus: (ItemGross / TotalGross) * TotalDiscount
+                const itemWeight = item.gross / grossSubtotal;
+                const itemDiscountPortion = totalDiscountAmount * itemWeight;
+                
+                // 2. Tentukan Dasar Pengenaan Pajak (DPP) / Net Amount per item
+                const itemNet = item.gross - itemDiscountPortion;
+
+                // 3. Hitung Pajak dari nilai Net
+                if (item.taxes.length > 0) {
+                    // Logic Enterprise Indonesia:
+                    // PB1 dikenakan atas (Harga Jual - Diskon + Service Charge)
+                    // Jika user setup Service Charge sebagai Tax Type juga, maka urutannya:
+                    // Kita asumsikan semua tax rate di DB dikalikan dengan ItemNet.
+                    // (Ini mencakup SC % dan PB1 % yang berjalan paralel terhadap DPP).
+                    
+                    // *Advanced Note:* Jika SC kena pajak (tax on tax), logic di bawah perlu penyesuaian sedikit.
+                    // Tapi standard umum POS SaaS: SC dan PB1 dihitung dari DPP yg sama, atau PB1 include SC.
+                    // Kode ini menggunakan asumsi: Semua pajak dihitung dari (Harga - Diskon).
+                    
+                    for (const tax of item.taxes) {
+                        if (tax.type === 'PERCENTAGE') {
+                            const taxValue = itemNet * (parseFloat(tax.rate) / 100);
+                            calculatedTotalTax += taxValue;
+                        }
+                    }
+                }
+            }
+
+            // Pembulatan Pajak (Standard Accounting: Round Half Up per Document)
+            calculatedTotalTax = Math.round(calculatedTotalTax);
+
+            // --- STEP 4: FINAL TOTAL ---
+            // Total = (Gross - Diskon) + Pajak
+            const finalTotal = (grossSubtotal - totalDiscountAmount) + calculatedTotalTax;
+
+            return {
+                subtotal: grossSubtotal,         // Gross
+                total_tax: calculatedTotalTax,   // Tax calculated on Net
+                discount_amount: totalDiscountAmount,
+                total: Math.round(finalTotal),   // Grand Total
+                voucher_details: voucherDetails
+            };
+
+        } catch (err) {
+            LogError(__dirname, 'OrderService.calculateOrder', err.message);
+            throw err;
         }
     }
 
@@ -567,6 +767,86 @@ class OrderService {
         } catch (err) {
             await transaction.rollback();
             LogError(__dirname, 'OrderService.deleteOrderByOptions', err.message);
+            throw err;
+        }
+    }
+
+    static async voidOrder(req, orderId, reason, userId) {
+        const db = req.app.get('db');
+        // Gunakan transaksi agar Inventory dan Order update bersifat atomik
+        const transaction = await sequelize.transaction();
+        
+        try {
+            // 1. Ambil Data Order Lengkap (Eager Loading Items & Modifiers)
+            const order = await db.orders.findOne({ 
+                where: { order_id: orderId },
+                include: [
+                    {
+                        model: db.order_items,
+                        as: 'order_items',
+                        include: [
+                            {
+                                model: db.order_item_modifiers, // Pastikan alias sesuai model OrderItems.js
+                                as: 'modifiers'
+                            }
+                        ]
+                    }
+                ],
+                transaction,
+                lock: transaction.LOCK.UPDATE // Kunci baris agar tidak ada yang edit saat proses void
+            });
+
+            if (!order) throw new Error('Pesanan tidak ditemukan.');
+
+            // 2. Validasi Rules Bisnis
+            if (order.status === 'cancelled') {
+                throw new Error('Pesanan ini sudah dibatalkan sebelumnya.');
+            }
+            
+            // (Opsional: Jika kebijakan perusahaan melarang void order yg sudah close bill/paid)
+            // if (order.status === 'paid') throw new Error('Pesanan LUNAS tidak bisa di-void, lakukan Refund.');
+
+            // 3. Proses Pengembalian Stok (Inventory Restoration)
+            if (order.order_items && order.order_items.length > 0) {
+                for (const item of order.order_items) {
+                    
+                    // A. Restore Stok Variasi Utama
+                    await InventoryService.updateStock(req, {
+                        variation_id: item.item_variation_id,
+                        type: 'IN', // IN = Barang Masuk Kembali
+                        amount: item.quantity,
+                        notes: `Void Order #${order.order_num} (${reason})` // Audit Log di kartu stok
+                    }, transaction);
+
+                    // B. Restore Stok Modifier (Jika ada & track_inventory true)
+                    if (item.modifiers && item.modifiers.length > 0) {
+                        for (const modItem of item.modifiers) {
+                            // Cek master modifier untuk status track_inventory
+                            const masterModifier = await db.modifiers.findByPk(modItem.modifier_id, { transaction });
+                            
+                            if (masterModifier && masterModifier.track_inventory) {
+                                masterModifier.stock_level += item.quantity; // Kembalikan sesuai qty item induk
+                                await masterModifier.save({ transaction });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. Update Status Order (Soft Delete / Flagging)
+            await order.update({
+                status: 'cancelled', // Ubah status, JANGAN DIHAPUS
+                void_reason: reason,
+                voided_by: userId,
+                voided_at: new Date()
+            }, { transaction });
+
+            await transaction.commit();
+            return order;
+
+        } catch (err) {
+            if (!transaction.finished) await transaction.rollback();
+            LogError(__dirname, 'OrderService.voidOrder', err.message);
             throw err;
         }
     }

@@ -1,74 +1,36 @@
-// src/db/models/Discounts.js
 module.exports = (sequelize, DataTypes) => {
-  const Discounts = sequelize.define('discounts', {
-    id: {
-      type: DataTypes.INTEGER,
-      primaryKey: true,
-      autoIncrement: true,
-      allowNull: false
-    },
-    name: { // "Diskon Kemerdekaan", "Flash Sale 12.12"
-      type: DataTypes.STRING,
-      allowNull: false
-    },
-    code: { // "MERDEKA17", "HEMAT1212"
-      type: DataTypes.STRING,
-      allowNull: true,
-      unique: true
-    },
-    type: { // Potongan persentase atau nominal tetap
-      type: DataTypes.ENUM('PERCENTAGE', 'FIXED'),
-      allowNull: false
-    },
-    value: { // Nilai diskon: 10 (untuk 10%) atau 10000 (untuk Rp10.000)
-      type: DataTypes.INTEGER,
-      allowNull: false
-    },
-    min_order_amount: { // Syarat minimum belanja untuk bisa pakai diskon
-      type: DataTypes.INTEGER,
-      defaultValue: 0
-    },
-    max_discount_amount: { // Batas maksimal potongan (untuk tipe PERCENTAGE)
-      type: DataTypes.INTEGER,
-      defaultValue: 0
-    },
-    // --- Bagian Timer ---
-    start_date: {
-      type: DataTypes.DATE,
-      allowNull: false
-    },
-    end_date: {
-      type: DataTypes.DATE,
-      allowNull: false
-    },
-    is_active: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: true
-    },
-    // --- Bagian Limit/Kuota ---
-    usage_limit_total: { // Kuota total untuk semua pengguna
-      type: DataTypes.INTEGER,
-      defaultValue: 0 // 0 = unlimited
-    },
-    usage_limit_per_user: { // Kuota per satu pengguna/member
-      type: DataTypes.INTEGER,
-      defaultValue: 0 // 0 = unlimited
-    },
-    current_usage: { // Penghitung berapa kali sudah terpakai
-      type: DataTypes.INTEGER,
-      defaultValue: 0
-    },
-  }, {
-    freezeTableName: true,
-    timestamps: true
-  });
+    const Discounts = sequelize.define('discounts', {
+        id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+        name: { type: DataTypes.STRING, allowNull: false },
+        code: { type: DataTypes.STRING, unique: true }, // Bisa NULL jika promo otomatis
+        type: { 
+            type: DataTypes.ENUM('PERCENTAGE', 'FIXED'), 
+            allowNull: false 
+        },
+        value: { type: DataTypes.INTEGER, allowNull: false }, // Misal: 10 (%) atau 10000 (Rp)
+        min_order_amount: { type: DataTypes.INTEGER, defaultValue: 0 },
+        max_discount_amount: { type: DataTypes.INTEGER, defaultValue: 0 },
+        
+        // Timer
+        start_date: DataTypes.DATE,
+        end_date: DataTypes.DATE,
+        is_active: { type: DataTypes.BOOLEAN, defaultValue: true },
 
-  Discounts.associate = function(models) {
-    Discounts.hasMany(models.order_discounts, {
-      foreignKey: 'discount_id',
-      as: 'usages'
+        // Limit
+        usage_limit_total: { type: DataTypes.INTEGER, defaultValue: 0 }, // 0 = Unlimited
+        usage_limit_per_user: { type: DataTypes.INTEGER, defaultValue: 0 },
+        current_usage: { type: DataTypes.INTEGER, defaultValue: 0 },
+
+        // Scope (Diskon per Item atau Total)
+        scope: { 
+            type: DataTypes.ENUM('ORDER', 'ITEM', 'CATEGORY'), 
+            defaultValue: 'ORDER' 
+        },
+        target_id: DataTypes.INTEGER, // ID Item/Category jika scope spesifik
+    }, {
+        tableName: 'discounts',
+        timestamps: true
     });
-  };
 
-  return Discounts;
+    return Discounts;
 };
