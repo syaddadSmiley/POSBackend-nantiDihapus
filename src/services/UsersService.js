@@ -69,11 +69,10 @@ class UsersService {
             const existingUser = await this.getUserByOptions(req, { where: { email: payload.email } });
             if (existingUser && existingUser.length > 0) throw new Error('Email sudah terdaftar');
 
-            const hashedPassword = await bcryptHash.hash(payload.password);
             const newUser = await BaseRepository.create(req, {
                 name: payload.name,
                 email: payload.email,
-                password: hashedPassword,
+                password: payload.password,
                 role_id: payload.role_id,
                 loggedin: false
             }, 'users');
@@ -91,7 +90,11 @@ class UsersService {
         try {
             const updateData = { name: payload.name, email: payload.email, role_id: payload.role_id };
             if (payload.password && payload.password.trim() !== '') {
-                updateData.password = await bcryptHash.hash(payload.password);
+                // HAPUS: updateData.password = await bcryptHash.hash(payload.password);
+                updateData.password = payload.password; // Kirim Plain Text
+            }
+            if (payload.pin && payload.pin.trim() !== '') {
+                updateData.pin = payload.pin; // Kirim Plain Text
             }
             await BaseRepository.updateOrderByOptions(req, updateData, 'users', { where: { id: id } });
             return { message: 'User updated successfully' };

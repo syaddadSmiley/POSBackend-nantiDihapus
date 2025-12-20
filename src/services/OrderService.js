@@ -176,7 +176,7 @@ class OrderService {
                 date: data.date,
                 notes: data.notes,
                 status: data.status,
-                
+                bill_name: data.bill_name,
                 // Financials
                 subtotal: calculatedSubtotal,
                 discount_amount: totalDiscountAmount, // Updated variable
@@ -417,6 +417,8 @@ class OrderService {
         }
     }
 
+    // file: src/services/OrderService.js
+
     static async updateOrder(req, data) {
         const transaction = await sequelize.transaction();
         try {
@@ -431,25 +433,81 @@ class OrderService {
             const existingOrder = getOrderDataArray[0];
 
             if (existingOrder.status === 'paid') throw new Error('Pesanan LUNAS tidak dapat diedit.');
-            if (existingOrder.status === 'partial') {
-                const totalPaid = await db.order_payments.sum('amount', { where: { order_id: orderId }, transaction }) || 0;
-                if (data.total < totalPaid) throw new Error(`Total baru tidak boleh lebih kecil dari pembayaran masuk.`);
+            
+            // --- 1. PERHITUNGAN ULANG (RE-CALCULATION) - FIX BUG ---
+            // Kita hitung ulang subtotal & tax berdasarkan harga DB, persis seperti createOrder
+            
+            let calculatedSubtotal = 0;
+            let calculatedTotalTax = 0;
+            const processedItems = []; 
+
+            for (const item of data.order_items) {
+                // A. Ambil Harga & Pajak dari DB (Agar aman dari manipulasi frontend)
+                const variation = await db.item_variations.findByPk(item.variation_id, {
+                    include: [{
+                        model: db.taxes,
+                        as: 'taxes',
+                        through: { attributes: [] } 
+                    }],
+                    transaction
+                });
+
+                if (!variation) throw new Error(`Variation ID ${item.variation_id} not found`);
+
+                // B. Hitung Subtotal Item
+                const itemSubtotal = variation.price * item.quantity;
+                calculatedSubtotal += itemSubtotal;
+
+                // C. Hitung Pajak
+                if (variation.taxes && variation.taxes.length > 0) {
+                    for (const tax of variation.taxes) {
+                        if (tax.type === 'PERCENTAGE') {
+                            const taxAmount = Math.round(itemSubtotal * (parseFloat(tax.rate) / 100));
+                            calculatedTotalTax += taxAmount;
+                        } 
+                    }
+                }
+
+                // Simpan untuk insert nanti
+                processedItems.push({
+                    inputItem: item,
+                    variationDB: variation,
+                    subtotal: itemSubtotal
+                });
             }
 
+            // --- 2. HITUNG DISKON (JIKA ADA) ---
+            // Logic diskon sederhana (Sesuaikan jika pakai VoucherService seperti createOrder)
+            let totalDiscountAmount = 0;
+            if (data.voucherCodes && Array.isArray(data.voucherCodes) && data.voucherCodes.length > 0) {
+                 // Jika update order support voucher, panggil DiscountService di sini
+                 // Untuk sekarang kita pakai logic fallback agar data konsisten
+                 // (Implementasikan loop DiscountService seperti createOrder jika perlu)
+            } 
+            else if (data.discount_amount > 0) {
+                // Fallback: Jika frontend kirim nominal diskon (misal hasil kalkulasi sebelumnya)
+                // Sebaiknya divalidasi ulang, tapi minimal kita cap agar tidak minus
+                totalDiscountAmount = data.discount_amount;
+            }
+
+            if (totalDiscountAmount > calculatedSubtotal) totalDiscountAmount = calculatedSubtotal;
+
+            // --- 3. HITUNG FINAL TOTAL ---
+            // Rumus: (Subtotal - Diskon) + Pajak
+            const finalTotal = (calculatedSubtotal - totalDiscountAmount) + calculatedTotalTax;
+
             // =========================================================
-            // A. KEMBALIKAN STOK LAMA (RESTORE)
+            // A. KEMBALIKAN STOK LAMA (RESTORE) - TETAP SAMA
             // =========================================================
             const oldItems = await db.order_items.findAll({ where: { order_id: orderId }, transaction });
             for (const item of oldItems) {
-                // 1. Restore Variasi via Service (Log IN)
                 await InventoryService.updateStock(req, {
                     variation_id: item.item_variation_id,
-                    type: 'IN', // Masuk kembali
+                    type: 'IN', 
                     amount: item.quantity,
                     notes: `Revisi Order #${existingOrder.order_num} (Restore)`
                 }, transaction);
                 
-                // 2. Restore Modifier (Manual)
                 const oldModifiers = await db.order_item_modifiers.findAll({ where: { order_item_id: item.id }, transaction });
                 for (const subItem of oldModifiers) {
                     const modifier = await db.modifiers.findByPk(subItem.modifier_id, { transaction, lock: true });
@@ -463,14 +521,15 @@ class OrderService {
             await BaseRepository.deleteOrderByOptions(req, 'order_items', { where: { order_id: orderId }, transaction });
             
             // =========================================================
-            // B. POTONG STOK BARU (DEDUCT)
+            // B. POTONG STOK BARU & INSERT ITEM - DIUPDATE
             // =========================================================
-            for (const item of data.order_items) {
-                const variationId = item.variation_id;
+            for (const pItem of processedItems) {
+                const item = pItem.inputItem;
                 const quantity = item.quantity;
+                const variationId = item.variation_id;
                 const modifierIds = item.modifier_ids || [];
 
-                // 1. Deduct Variasi via Service (Log OUT)
+                // 1. Deduct Variasi
                 await InventoryService.updateStock(req, {
                     variation_id: variationId,
                     type: 'OUT',
@@ -478,7 +537,7 @@ class OrderService {
                     notes: `Revisi Order #${existingOrder.order_num} (Update)`
                 }, transaction);
 
-                // 2. Deduct Modifier (Manual)
+                // 2. Deduct Modifier
                 for (const modId of modifierIds) {
                     const modifier = await db.modifiers.findByPk(modId, { transaction, lock: true });
                     if (!modifier) throw new Error(`Modifier ${modId} not found`);
@@ -489,16 +548,17 @@ class OrderService {
                     }
                 }
 
-                // ... (Create order_items & modifiers logic sama seperti createOrder) ...
+                // 3. Create Order Item (Gunakan harga dari DB / Hasil Hitung)
                 const createdOrderItem = await BaseRepository.create(req, {
                     order_id: orderId,
                     item_variation_id: variationId,
                     item_name: item.item_name,
-                    item_price: item.item_price,
-                    sub_total_price: item.sub_total_price,
+                    item_price: pItem.variationDB.price, // PAKAI HARGA DB
+                    sub_total_price: pItem.subtotal,     // PAKAI HASIL HITUNG
                     quantity: quantity,
                 }, 'order_items', { transaction });
                 
+                // 4. Create Modifiers
                 for (const modId of modifierIds) {
                     const modifier = await db.modifiers.findByPk(modId, { transaction });
                     await BaseRepository.create(req, {
@@ -510,9 +570,24 @@ class OrderService {
                 }
             }
             
-            const { order_items, ...orderData } = data; 
+            // =========================================================
+            // C. UPDATE HEADER ORDER (GUNAKAN NILAI CALCULATED)
+            // =========================================================
+            const orderUpdatePayload = {
+                date: data.date,
+                notes: data.notes,
+                bill_name: data.bill_name,
+                metode_pembayaran: data.metode_pembayaran,
+                
+                // OVERRIDE FINANCIALS DENGAN HASIL HITUNGAN BACKEND
+                subtotal: calculatedSubtotal,
+                discount_amount: totalDiscountAmount,
+                total_tax: calculatedTotalTax,
+                total: finalTotal
+            };
+
             const options = { where: { order_id: orderId }, transaction: transaction };
-            const updatedOrder = await BaseRepository.updateOrderByOptions(req, orderData, 'orders', options);
+            const updatedOrder = await BaseRepository.updateOrderByOptions(req, orderUpdatePayload, 'orders', options);
 
             await transaction.commit();
             return updatedOrder;
@@ -895,6 +970,118 @@ class OrderService {
         } catch (error) {
             LogError(__dirname, `OrderService.generateReport (${orderType})`, error.message);
             return Promise.reject(error);
+        }
+    }
+
+    static async voidOrderItem(req, { orderId, orderItemId, reason, voidedBy }) {
+        const db = req.app.get('db');
+        const transaction = await db.sequelize.transaction();
+
+        try {
+            // 1. Ambil Data Item & Order Induk
+            const targetItem = await db.order_items.findOne({
+                where: { id: orderItemId, order_id: orderId },
+                include: [{ model: db.order_item_modifiers, as: 'modifiers' }],
+                transaction,
+                lock: transaction.LOCK.UPDATE
+            });
+
+            if (!targetItem) throw new Error('Item tidak ditemukan.');
+            if (targetItem.status === 'void') throw new Error('Item ini sudah dibatalkan sebelumnya.');
+
+            const parentOrder = await db.orders.findOne({ 
+                where: { order_id: orderId }, 
+                transaction,
+                lock: transaction.LOCK.UPDATE 
+            });
+
+            if (parentOrder.status === 'paid' || parentOrder.status === 'cancelled') {
+                throw new Error(`Order sudah ${parentOrder.status}, tidak bisa void item.`);
+            }
+
+            // 2. KEMBALIKAN STOK (Inventory IN)
+            // A. Item Utama
+            await InventoryService.updateStock(req, {
+                variation_id: targetItem.item_variation_id,
+                type: 'IN', // Barang Masuk Kembali
+                amount: targetItem.quantity,
+                notes: `Void Item #${targetItem.id} (Order #${parentOrder.order_num})`
+            }, transaction);
+
+            // B. Modifier (Jika Ada & Track Inventory)
+            if (targetItem.modifiers && targetItem.modifiers.length > 0) {
+                for (const mod of targetItem.modifiers) {
+                    const masterMod = await db.modifiers.findByPk(mod.modifier_id, { transaction });
+                    if (masterMod && masterMod.track_inventory) {
+                        masterMod.stock_level += targetItem.quantity;
+                        await masterMod.save({ transaction });
+                    }
+                }
+            }
+
+            // 3. Update Status Item -> VOID
+            await targetItem.update({
+                status: 'void',
+                void_reason: reason,
+                voided_by: voidedBy,
+                voided_at: new Date()
+            }, { transaction });
+
+            // 4. HITUNG ULANG HEADER ORDER (CRITICAL!)
+            // Ambil semua item yang MASIH ACTIVE
+            const activeItems = await db.order_items.findAll({
+                where: { order_id: orderId, status: 'active' },
+                include: [{
+                    model: db.item_variations,
+                    as: 'variation',
+                    include: [{ model: db.taxes, as: 'taxes', through: { attributes: [] } }]
+                }],
+                transaction
+            });
+
+            let newSubtotal = 0;
+            let newTotalTax = 0;
+
+            for (const item of activeItems) {
+                // Gunakan harga asli saat transaksi (item.sub_total_price) agar akurat
+                const lineTotal = parseInt(item.sub_total_price || 0);
+                newSubtotal += lineTotal;
+
+                // Hitung Pajak Ulang
+                if (item.variation && item.variation.taxes) {
+                    for (const tax of item.variation.taxes) {
+                        if (tax.type === 'PERCENTAGE') {
+                            // Asumsi simple tax exclusive
+                            newTotalTax += Math.round(lineTotal * (parseFloat(tax.rate) / 100));
+                        }
+                    }
+                }
+            }
+
+            // Hitung Diskon Ulang (Jika diskon global)
+            let newDiscount = parseInt(parentOrder.discount_amount || 0);
+            if (newDiscount > newSubtotal) newDiscount = newSubtotal; // Cap
+
+            const newTotal = (newSubtotal - newDiscount) + newTotalTax;
+
+            // Debugging (Opsional: Cek di console server jika masih 0)
+            // console.log(`RECALC: Sub=${newSubtotal}, Disc=${newDiscount}, Tax=${newTotalTax}, Final=${newTotal}`);
+
+            // 5. Simpan Header Baru
+            await parentOrder.update({
+                subtotal: newSubtotal,
+                total_tax: newTotalTax,
+                discount_amount: newDiscount,
+                total: Math.max(0, newTotal)
+            }, { transaction });
+
+            await transaction.commit();
+            return parentOrder; // Return data order terbaru
+
+        } catch (err) {
+            await transaction.rollback();
+            LogError(__dirname, 'OrderService.voidOrderItem', err.message);
+            throw err;
         }
     }
 }

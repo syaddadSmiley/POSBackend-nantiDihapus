@@ -20,6 +20,23 @@ module.exports = (sequelize, DataTypes) => {
         item_price: DataTypes.INTEGER,
         sub_total_price: DataTypes.INTEGER,
         quantity: DataTypes.INTEGER,
+        status: {
+            type: DataTypes.ENUM('active', 'void'),
+            defaultValue: 'active',
+            allowNull: false
+        },
+        void_reason: {
+            type: DataTypes.STRING,
+            allowNull: true
+        },
+        voided_by: { // ID Supervisor yang input PIN
+            type: DataTypes.INTEGER,
+            allowNull: true
+        },
+        voided_at: {
+            type: DataTypes.DATE,
+            allowNull: true
+        }
     }, {
         timestamps: true,
         freezeTableName: true,
@@ -43,6 +60,11 @@ module.exports = (sequelize, DataTypes) => {
         OrderItems.hasMany(models.order_item_modifiers, {
             foreignKey: 'order_item_id', // Menunjuk ke 'id' (INT) di tabel ini
             as: 'modifiers'
+        });
+
+        OrderItems.belongsTo(models.users, {
+            foreignKey: 'voided_by',
+            as: 'void_actor'
         });
     };
 

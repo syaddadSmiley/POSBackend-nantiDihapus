@@ -6,6 +6,7 @@ const VoucherService = require('../services/VoucherService');
 const async = require('async');
 const { LogError, LogAny } = require('../utils');
 const email = require('../utils/email');
+const bcrypt = require('bcryptjs');
 const { Op, Sequelize, fn, col } = require('sequelize');
 const moment = require('moment');
 
@@ -290,6 +291,62 @@ class FnbController {
             }
             
             LogError(__dirname, 'fnb/api/v1/fnb/orderDelete', err.message);
+            res.status(500).json({ message: err.message });
+        }
+    }
+
+    static async orderVoidItem(req, res, next) {
+        try {
+            const { order_id, order_item_id } = req.params;
+            const { reason, pin, supervisor_id } = req.body;
+            const db = req.app.get('db');
+
+            // 1. Validasi Input
+            if (!reason) return res.status(400).json({ message: "Alasan (reason) wajib diisi." });
+            if (!pin) return res.status(400).json({ message: "PIN Otorisasi wajib diisi." });
+            
+            // 2. VERIFIKASI PIN SUPERVISOR
+            // Kita cari user berdasarkan ID yang dikirim (atau username), lalu cek PIN-nya
+            // Asumsi: Tabel users punya kolom 'pin' (hashed) dan role yang sesuai
+            let authUser = null;
+            
+            if (supervisor_id) {
+                authUser = await db.users.findByPk(supervisor_id);
+            } else {
+                // Jika tidak kirim ID, gunakan user yang sedang login (jika dia punya akses)
+                const currentUserId = req.decoded?.payloadToken?.id;
+                authUser = await db.users.findByPk(currentUserId);
+            }
+
+            if (!authUser) {
+                return res.status(404).json({ message: "User otorisasi tidak ditemukan." });
+            }
+
+            // Cek permission (Optional: jika supervisor_id harus role tertentu)
+            // if (authUser.role_id !== SUPERVISOR_ROLE_ID) ...
+
+            // Cek Match PIN (Asumsi PIN dihash pakai bcrypt, sama seperti password)
+            // Jika PIN di DB plain text (tidak disarankan), pakai: if (authUser.pin !== pin)
+            const isPinValid = await bcrypt.compare(pin, authUser.pin); 
+            if (!isPinValid) {
+                return res.status(403).json({ message: "PIN Otorisasi Salah!" });
+            }
+
+            // 3. Panggil Service
+            const result = await OrderService.voidOrderItem(req, {
+                orderId: order_id,
+                orderItemId: order_item_id,
+                reason: reason,
+                voidedBy: authUser.id
+            });
+
+            res.json({
+                message: "Item berhasil dibatalkan (void).",
+                data: result
+            });
+
+        } catch (err) {
+            LogError(__dirname, 'fnb/api/v1/fnb/orderVoidItem', err.message);
             res.status(500).json({ message: err.message });
         }
     }

@@ -17,6 +17,7 @@ router.delete('/order/:order_id', mw.verifyToken, mw.can('pos.refund'), FnbContr
 // --- Laporan via Email (Butuh izin report.sales) ---
 router.post('/order/report', mw.verifyToken, mw.can('report.sales'), FnbController.orderReport);
 router.post('/report', mw.verifyToken, mw.can('report.sales'), FnbController.report);
+router.delete('/order/:order_id/items/:order_item_id', mw.verifyToken, FnbController.orderVoidItem);
 
 router.get('/vouchers', mw.verifyToken, mw.can('pos.promo'), FnbController.voucherGet);
 router.post('/vouchers', mw.verifyToken, mw.can('pos.promo'), FnbController.voucherPost);

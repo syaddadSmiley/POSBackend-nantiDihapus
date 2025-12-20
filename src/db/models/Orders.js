@@ -36,6 +36,11 @@ module.exports = (sequelize, DataTypes) => {
             type: DataTypes.INTEGER,
             allowNull: false,
         },
+        bill_name: {
+            type: DataTypes.STRING,
+            allowNull: true, // Boleh kosong untuk pelanggan anonim
+            defaultValue: null,
+        },
         void_reason: { 
             type: DataTypes.STRING,
             allowNull: true
