@@ -64,7 +64,8 @@ class OrderService {
 
             // --- 1. SETUP & ORDER ID GENERATION (KEPT YOUR LOGIC) ---
             let userId = req.decoded?.payloadToken?.id || req.user?.id || null;
-            const clientDate = new Date(data.date); 
+            let clientDate = new Date(data.date);
+            if (isNaN(clientDate.getTime())) clientDate = new Date();
             
             let mm_id = (clientDate.getMonth() + 1).toString().padStart(2, '0');
             let dd_id = clientDate.getDate().toString().padStart(2, '0');
@@ -173,7 +174,7 @@ class OrderService {
                 order_id: data.order_id,
                 order_num: data.order_num,
                 order_type: data.order_type,
-                date: data.date,
+                date: clientDate.toISOString(),
                 notes: data.notes,
                 status: data.status,
                 bill_name: data.bill_name,

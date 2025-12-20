@@ -36,29 +36,27 @@ module.exports = {
         env: NODE_ENV,
     },
     db: {
-        // Support penamaan variabel TiDB (DB_USER) dan kode lama (DB_USERNAME)
         username: process.env.DB_USER || process.env.DB_USERNAME || 'root', 
         password: process.env.DB_PASSWORD || process.env.DB_PASS || '123123',
         database: process.env.DB_NAME || 'pos_production',
         host: process.env.DB_HOST || '127.0.0.1',
-        port: process.env.DB_PORT || 3306, // Default TiDB Port
+        port: process.env.DB_PORT || 3306,
         dialect: 'mysql',
-        timezone: '+00:00', // Paksa Sequelize mengirimkan waktu dalam UTC
+        timezone: '+00:00', // Paksa Sequelize menggunakan UTC
         dialectOptions: {
-            dateStrings: true, // Memastikan data tidak diubah-ubah saat dibaca kembali
-            typeCast: true
+            dateStrings: true, // Mencegah driver MySQL mengubah format tanggal
+            typeCast: true,
+            // GABUNGKAN SSL DI SINI AGAR TIDAK TER-OVERWRITE
+            ...(useSSL ? {
+                ssl: {
+                    require: true,
+                    rejectUnauthorized: true,
+                    minVersion: 'TLSv1.2'
+                }
+            } : {})
         },
-		dialectModule: mysql2,
-        logging: NODE_ENV === 'development' ? console.log : false, // Matikan log SQL di production agar bersih
-        
-        // KONFIGURASI KRUSIAL UNTUK TIDB:
-        dialectOptions: useSSL ? {
-            ssl: {
-                require: true,
-                rejectUnauthorized: true, // TiDB menggunakan Public CA yang valid
-                minVersion: 'TLSv1.2'
-            }
-        } : {} // Kosongkan jika di localhost biasa
+        dialectModule: mysql2,
+        logging: NODE_ENV === 'development' ? console.log : false,
     },
     winiston: {
         logpath: './logs/',
