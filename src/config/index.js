@@ -43,6 +43,11 @@ module.exports = {
         host: process.env.DB_HOST || '127.0.0.1',
         port: process.env.DB_PORT || 3306, // Default TiDB Port
         dialect: 'mysql',
+        timezone: '+00:00', // Paksa Sequelize mengirimkan waktu dalam UTC
+        dialectOptions: {
+            dateStrings: true, // Memastikan data tidak diubah-ubah saat dibaca kembali
+            typeCast: true
+        },
 		dialectModule: mysql2,
         logging: NODE_ENV === 'development' ? console.log : false, // Matikan log SQL di production agar bersih
         
