@@ -787,12 +787,15 @@ class OrderService {
 
             await transaction.commit();
 
+            const fullOrderDetails = await this.getOrderDetailInternal(req, order_id);
+
             return {
                 payment: newPayment,
                 order_status: newStatus,
                 total_paid: totalPaidNow,
                 remaining_due: totalTagihan - totalPaidNow,
-                change: changeAmount
+                change: changeAmount,
+                fullOrder: fullOrderDetails
             };
 
         } catch (err) {
@@ -800,6 +803,17 @@ class OrderService {
             LogError(__dirname, 'OrderService.addPayment', err.message);
             throw err;
         }
+    }
+
+    static async getOrderDetailInternal(req, order_id) {
+        const db = req.app.get('db');
+        return await db.orders.findOne({
+            where: { order_id },
+            include: [
+                { model: db.order_items, as: 'order_items', include: [/* variations, modifiers, taxes */] },
+                { model: db.order_payments, as: 'payments' }
+            ]
+        });
     }
 
     /**
