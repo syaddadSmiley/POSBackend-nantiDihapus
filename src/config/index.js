@@ -34,6 +34,8 @@ module.exports = {
         port: process.env.PORT || 8002, // Render pakai PORT, bukan DEV_APP_PORT
         appName: process.env.APP_NAME || 'server-pos',
         env: NODE_ENV,
+        storeTimezone: parseInt(process.env.STORE_TIMEZONE_OFFSET || '7'),
+        dbTimezone: process.env.DB_TIMEZONE_OFFSET || '+07:00',
     },
     db: {
         username: process.env.DB_USER || process.env.DB_USERNAME || 'root', 

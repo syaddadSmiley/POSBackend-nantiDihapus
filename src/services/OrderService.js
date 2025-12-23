@@ -5,6 +5,7 @@ const _ = require('lodash');
 const { LogError, LogAny } = require('../utils');
 const { Op } = require('sequelize');
 const { sequelize } = require('../db/models');
+const { storeTimezone, dbTimezone } = require('../config');
 const moment = require('moment');
 const InventoryService = require('./InventoryService');
 const DiscountService = require('./DiscountService');
@@ -16,23 +17,30 @@ class OrderService {
      */
     static async generateUniqueOrderNum(req, clientDateString, orderType, transaction) {
         try {
-            // clientDateString adalah "2025-11-15T01:47:40"
-            // Kita hanya butuh bagian tanggal: "2025-11-15"
-            const clientDate_YYYY_MM_DD = clientDateString.split('T')[0];
+            if (!clientDateString) throw new Error("Tanggal pesanan diperlukan");
 
-            // Kueri ini mengonversi 'date' (disimpan di UTC, +00:00) ke 'WIB' (+07:00)
-            // SEBELUM membandingkannya dengan tanggal dari klien.
+            // 2. PERBAIKAN: Gunakan 'moment()', JANGAN 'new Date()'
+            // .utcOffset(storeTimezone) mengubah zona waktu ke WIB (misal +7)
+            const businessDate = moment(clientDateString).utcOffset(parseInt(storeTimezone || 7));
+            
+            // 3. Sekarang .format() akan berfungsi karena businessDate adalah objek Moment
+            const searchDateString = businessDate.format('YYYY-MM-DD');
+
             const query = `
                 SELECT MAX(order_num) as maxOrder 
                 FROM orders 
                 WHERE 
-                    DATE(CONVERT_TZ(date, '+00:00', '+07:00')) = ? 
-                    AND order_type = ? 
+                    DATE(CONVERT_TZ(date, '+00:00', :dbTzOffset)) = :targetDate 
+                    AND order_type = :orderType 
                 FOR UPDATE
             `;
             
             const result = await req.app.get('db').sequelize.query(query, { 
-                replacements: [clientDate_YYYY_MM_DD, orderType], // Kirim string "2025-11-15"
+                replacements: { 
+                    targetDate: searchDateString, 
+                    orderType: orderType,
+                    dbTzOffset: dbTimezone || '+07:00'
+                },
                 type: req.app.get('db').sequelize.QueryTypes.SELECT,
                 transaction: transaction,
                 lock: transaction.LOCK.UPDATE
