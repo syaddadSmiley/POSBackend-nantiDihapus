@@ -596,16 +596,37 @@ class OrderService {
             };
 
             const options = { where: { order_id: orderId }, transaction: transaction };
-            const updatedOrder = await BaseRepository.updateOrderByOptions(req, orderUpdatePayload, 'orders', options);
+        
+            // 1. Lakukan Update
+            await BaseRepository.updateOrderByOptions(req, orderUpdatePayload, 'orders', options);
+
+            // 2. ENTERPRISE STANDARD: Re-Fetch Data Terbaru
+            // Jangan return hasil update, tapi return data yang sudah di-refresh dari DB.
+            // Gunakan fungsi getOrderDetailInternal atau findOne biasa.
+            const freshOrder = await this.getOrderDetailInternal(req, orderId, transaction); // Pastikan pass transaction jika getOrderDetailInternal mendukungnya, atau query manual
 
             await transaction.commit();
-            return updatedOrder;
+            
+            // 3. Return Full Object
+            return freshOrder;
 
         } catch (error) {
             if (!transaction.finished) await transaction.rollback();
             LogError(__dirname, 'OrderService.updateOrder', error.message);
             throw error;
         }
+    }
+
+    static async getOrderDetailInternal(req, orderId, transaction = null) {
+        const db = req.app.get('db');
+        return await db.orders.findOne({
+            where: { order_id: orderId },
+            transaction, // Optional transaction
+            // Include relasi penting agar response frontend lengkap
+            include: [
+                { model: db.order_items, as: 'order_items' } 
+            ]
+        });
     }
     
     static async payOrder(req, orderId, paymentMethod) {
